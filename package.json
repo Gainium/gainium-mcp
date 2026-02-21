@@ -1,25 +1,51 @@
 {
-  "name": "gainium-mcp-server",
-  "version": "1.0.0",
-  "description": "Local HTTP MCP server for Gainium",
+  "name": "gainium-mcp",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "MCP server for Gainium trading bot platform — manage bots, deals, balances and more via AI assistants",
   "main": "dist/server.js",
+  "bin": {
+    "gainium-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "dev": "tsc && node dist/server.js"
+    "dev": "tsc && node dist/server.js",
+    "prepublishOnly": "npm run build"
   },
-  "keywords": ["mcp", "gainium", "server"],
-  "author": "",
+  "keywords": [
+    "mcp",
+    "gainium",
+    "trading",
+    "bots",
+    "crypto",
+    "model-context-protocol",
+    "claude",
+    "ai"
+  ],
+  "author": "Gainium",
   "license": "MIT",
+  "homepage": "https://github.com/nicogainium/gainium-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nicogainium/gainium-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nicogainium/gainium-mcp/issues"
+  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
-    "dotenv": "^16.4.7",
-    "express": "^4.21.2",
-    "zod": "^3.24.1"
+    "@modelcontextprotocol/sdk": "^1.12.0"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
     "@types/node": "^22.10.5",
     "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
