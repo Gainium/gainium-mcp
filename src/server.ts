@@ -22,10 +22,13 @@ import { GainiumClient } from "./gainium-client.js";
 // ── Environment ──────────────────────────────────────────────────────────────
 
 const SERVER_NAME = "gainium-mcp";
-const SERVER_VERSION = "2.2.1";
+const SERVER_VERSION = "2.3.0";
 
 const API_KEY = process.env.GAINIUM_API_KEY;
 const API_SECRET = process.env.GAINIUM_API_SECRET;
+const ALLOWED_BOT_ID = process.env.GAINIUM_ALLOWED_BOT_ID?.trim() || undefined;
+const PAPER_ONLY =
+  process.env.GAINIUM_PAPER_ONLY?.trim().toLowerCase() === "true";
 const BASE_URL =
   process.env.GAINIUM_API_BASE_URL || "https://api.gainium.io";
 const TRANSPORT_MODE = resolveTransportMode(
@@ -208,6 +211,45 @@ function isPlainObject(value: unknown): value is Record<string, any> {
 
 function hasKeys(value: unknown): value is Record<string, any> {
   return isPlainObject(value) && Object.keys(value).length > 0;
+}
+
+const BOT_FILTER_LIST_TOOLS = new Set([
+  "get_dca_bots",
+  "get_combo_bots",
+  "get_grid_bots",
+  "get_dca_deals",
+  "get_combo_deals",
+  "get_terminal_deals",
+]);
+
+function enforceGuards(args: Record<string, any>): void {
+  const toolName = args.__toolName;
+
+  if (ALLOWED_BOT_ID) {
+    if (BOT_FILTER_LIST_TOOLS.has(toolName)) {
+      args.botId = ALLOWED_BOT_ID;
+    } else if (
+      args.botId !== undefined &&
+      args.botId !== null &&
+      args.botId !== ALLOWED_BOT_ID
+    ) {
+      throw new Error(
+        `Bot ID '${args.botId}' is not allowed. This instance is restricted to bot '${ALLOWED_BOT_ID}'.`
+      );
+    }
+  }
+
+  if (PAPER_ONLY) {
+    if (args.paperContext === false) {
+      throw new Error(
+        "Live trading is disabled. This instance is restricted to paper trading only. Set paperContext to true or omit it."
+      );
+    }
+
+    if (args.paperContext === undefined || args.paperContext === null) {
+      args.paperContext = true;
+    }
+  }
 }
 
 function validateBacktestPayloadShape(args: Record<string, any>): void {
@@ -1582,6 +1624,12 @@ async function handleToolCall(
   args: Record<string, any>,
   client: GainiumClient
 ): Promise<string> {
+  Object.defineProperty(args, "__toolName", {
+    value: name,
+    enumerable: false,
+    configurable: true,
+  });
+  enforceGuards(args);
   validateToolArgs(name, args);
 
   switch (name) {
@@ -1590,6 +1638,7 @@ async function handleToolCall(
     case "get_dca_bots": {
       const res = await client.request("GET", "/api/v2/bots/dca", {
         query: {
+          botId: args.botId,
           fields: args.fields,
           page: args.page,
           status: args.status,
@@ -1602,6 +1651,7 @@ async function handleToolCall(
     case "get_combo_bots": {
       const res = await client.request("GET", "/api/v2/bots/combo", {
         query: {
+          botId: args.botId,
           fields: args.fields,
           page: args.page,
           status: args.status,
@@ -1614,6 +1664,7 @@ async function handleToolCall(
     case "get_grid_bots": {
       const res = await client.request("GET", "/api/v2/bots/grid", {
         query: {
+          botId: args.botId,
           fields: args.fields,
           page: args.page,
           status: args.status,
@@ -2197,7 +2248,8 @@ function createMcpServer(): Server {
     const { name, arguments: toolArgs } = request.params;
     try {
       const client = createGainiumClientFromHeaders(extra.requestInfo?.headers);
-      const result = await handleToolCall(name, toolArgs ?? {}, client);
+      const args = isPlainObject(toolArgs) ? { ...toolArgs } : {};
+      const result = await handleToolCall(name, args, client);
       return { content: [{ type: "text" as const, text: result }] };
     } catch (error: any) {
       return {
