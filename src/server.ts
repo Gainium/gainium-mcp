@@ -22,7 +22,7 @@ import { GainiumClient } from "./gainium-client.js";
 // ── Environment ──────────────────────────────────────────────────────────────
 
 const SERVER_NAME = "gainium-mcp";
-const SERVER_VERSION = "2.2.0";
+const SERVER_VERSION = "2.2.1";
 
 const API_KEY = process.env.GAINIUM_API_KEY;
 const API_SECRET = process.env.GAINIUM_API_SECRET;
