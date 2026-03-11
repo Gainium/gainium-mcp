@@ -34,6 +34,32 @@ That's it. The server starts automatically when your AI assistant needs it.
 | `GAINIUM_API_KEY` | Yes | — | Your Gainium API public key |
 | `GAINIUM_API_SECRET` | Yes | — | Your Gainium API secret |
 | `GAINIUM_API_BASE_URL` | No | `https://api.gainium.io` | API base URL |
+| `GAINIUM_MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio`, `http`, `streamable-http`, `sse`, or `http-sse` |
+| `GAINIUM_MCP_HOST` | No | `127.0.0.1` | Bind host for HTTP mode |
+| `GAINIUM_MCP_PORT` | No | `3000` | Bind port for HTTP mode |
+| `GAINIUM_MCP_HTTP_PATH` | No | `/mcp` | Streamable HTTP endpoint path |
+| `GAINIUM_MCP_SSE_PATH` | No | `/sse` | Deprecated SSE GET endpoint path |
+| `GAINIUM_MCP_MESSAGES_PATH` | No | `/messages` | Deprecated SSE POST endpoint path |
+
+## HTTP and SSE Mode
+
+By default, `gainium-mcp` runs over stdio for MCP clients that spawn local processes. To run it as an HTTP server instead:
+
+```bash
+export GAINIUM_API_KEY=your_key
+export GAINIUM_API_SECRET=your_secret
+export GAINIUM_MCP_TRANSPORT=http
+export GAINIUM_MCP_HOST=127.0.0.1
+export GAINIUM_MCP_PORT=3000
+node dist/server.js
+```
+
+When HTTP mode is enabled, the server exposes both transport styles:
+
+- `GET|POST|DELETE /mcp` for the current Streamable HTTP transport
+- `GET /sse` plus `POST /messages?sessionId=...` for deprecated HTTP+SSE clients
+
+This makes one server process compatible with both modern MCP HTTP clients and older SSE-based integrations.
 
 ## Available Tools (48)
 
@@ -164,6 +190,11 @@ npm run build
 export GAINIUM_API_KEY=your_key
 export GAINIUM_API_SECRET=your_secret
 node dist/server.js
+
+# Run in HTTP/SSE mode
+export GAINIUM_MCP_TRANSPORT=http
+export GAINIUM_MCP_PORT=3000
+node dist/server.js
 ```
 
 ## Architecture
@@ -171,7 +202,7 @@ node dist/server.js
 ```
 gainium-mcp/
 ├── src/
-│   ├── server.ts          # MCP server + tool definitions (stdio transport)
+│   ├── server.ts          # MCP server + tool definitions (stdio + HTTP/SSE transports)
 │   └── gainium-client.ts  # HMAC-authenticated HTTP client for Gainium API v2
 ├── dist/                  # Compiled output (published to npm)
 ├── package.json

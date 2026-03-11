@@ -1,20 +1,52 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  isInitializeRequest,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { GainiumClient } from "./gainium-client.js";
 
 // ── Environment ──────────────────────────────────────────────────────────────
 
+const SERVER_NAME = "gainium-mcp";
+const SERVER_VERSION = "2.2.0";
+
 const API_KEY = process.env.GAINIUM_API_KEY;
 const API_SECRET = process.env.GAINIUM_API_SECRET;
 const BASE_URL =
   process.env.GAINIUM_API_BASE_URL || "https://api.gainium.io";
+const TRANSPORT_MODE = resolveTransportMode(
+  process.env.GAINIUM_MCP_TRANSPORT || process.env.MCP_TRANSPORT
+);
+const HTTP_HOST =
+  process.env.GAINIUM_MCP_HOST || process.env.MCP_HOST || "127.0.0.1";
+const HTTP_PORT = resolvePort(
+  process.env.GAINIUM_MCP_PORT || process.env.MCP_PORT || process.env.PORT,
+  3000
+);
+const MCP_HTTP_PATH = normalizePath(
+  process.env.GAINIUM_MCP_HTTP_PATH || process.env.MCP_HTTP_PATH || "/mcp"
+);
+const MCP_SSE_PATH = normalizePath(
+  process.env.GAINIUM_MCP_SSE_PATH || process.env.MCP_SSE_PATH || "/sse"
+);
+const MCP_MESSAGES_PATH = normalizePath(
+  process.env.GAINIUM_MCP_MESSAGES_PATH ||
+    process.env.MCP_MESSAGES_PATH ||
+    "/messages"
+);
 
 if (!API_KEY || !API_SECRET) {
   console.error(
@@ -26,6 +58,110 @@ if (!API_KEY || !API_SECRET) {
 const client = new GainiumClient(BASE_URL, API_KEY, API_SECRET);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+function resolveTransportMode(value: string | undefined): "stdio" | "http" {
+  switch ((value || "stdio").trim().toLowerCase()) {
+    case "":
+    case "stdio":
+      return "stdio";
+    case "http":
+    case "sse":
+    case "http-sse":
+    case "streamable-http":
+      return "http";
+    default:
+      throw new Error(
+        `Unsupported transport mode: ${value}. Use one of: stdio, http, streamable-http, sse, http-sse`
+      );
+  }
+}
+
+function resolvePort(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`Invalid port: ${value}`);
+  }
+
+  return parsed;
+}
+
+function normalizePath(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "/";
+  }
+
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function getHeaderValue(
+  value: string | string[] | undefined
+): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+
+  if (chunks.length === 0) {
+    return undefined;
+  }
+
+  const rawBody = Buffer.concat(chunks).toString("utf8").trim();
+  if (!rawBody) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    throw new Error("Request body must be valid JSON");
+  }
+}
+
+function writeTextResponse(
+  res: ServerResponse,
+  statusCode: number,
+  message: string
+): void {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.end(message);
+}
+
+function writeJsonRpcError(
+  res: ServerResponse,
+  statusCode: number,
+  message: string,
+  code = -32000
+): void {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: { code, message },
+      id: null,
+    })
+  );
+}
+
+function writeMethodNotAllowed(
+  res: ServerResponse,
+  allowedMethods: string[]
+): void {
+  res.statusCode = 405;
+  res.setHeader("Allow", allowedMethods.join(", "));
+  res.end("Method Not Allowed");
+}
 
 function paperHeader(
   args: Record<string, any>
@@ -47,6 +183,26 @@ function isPlainObject(value: unknown): value is Record<string, any> {
 
 function hasKeys(value: unknown): value is Record<string, any> {
   return isPlainObject(value) && Object.keys(value).length > 0;
+}
+
+function validateBacktestPayloadShape(args: Record<string, any>): void {
+  if (!hasKeys(args.payload)) {
+    throw new Error(
+      "Missing required top-level field 'payload'. Expected shape: { payload: { data: { exchange, exchangeUUID, settings, from?, to?, interval? } } }"
+    );
+  }
+
+  if (!hasKeys(args.payload.data)) {
+    throw new Error(
+      "Missing required object 'payload.data'. Place bot settings under 'payload.data.settings'."
+    );
+  }
+
+  if (!hasKeys(args.payload.data.settings)) {
+    throw new Error(
+      "Missing required object 'payload.data.settings'. Use discovery tools to build the inner bot settings object, then place it under 'payload.data.settings'."
+    );
+  }
 }
 
 function validateToolArgs(name: string, args: Record<string, any>): void {
@@ -138,18 +294,14 @@ function validateToolArgs(name: string, args: Record<string, any>): void {
     if (!isNonEmptyString(args.botType)) {
       throw new Error("'botType' is required");
     }
-    if (!hasKeys(args.payload)) {
-      throw new Error("'payload' must be a non-empty object");
-    }
+    validateBacktestPayloadShape(args);
   }
 
   if (name === "validate_backtest_payload") {
     if (!isNonEmptyString(args.botType)) {
       throw new Error("'botType' is required");
     }
-    if (!hasKeys(args.payload)) {
-      throw new Error("'payload' must be a non-empty object");
-    }
+    validateBacktestPayloadShape(args);
   }
 
   if (name === "get_backtest_requests") {
@@ -1021,7 +1173,7 @@ const tools: Tool[] = [
   {
     name: "estimate_backtest_cost",
     description:
-      "Estimate the cost in credits for a server-side backtest before submitting. Requires write API key permission.",
+      "Estimate the credit cost of a server-side backtest before submitting it. Discovery tools describe the inner bot settings object, but this tool expects the full wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. Minimal valid example: { \"botType\": \"dca\", \"paperContext\": false, \"payload\": { \"data\": { \"exchange\": \"binance\", \"exchangeUUID\": \"650e8400-e29b-41d4-a716-446655440001\", \"settings\": { \"name\": \"BTC DCA Strategy\", \"pair\": [\"BTC_USDT\"], \"strategy\": \"LONG\", \"baseOrderSize\": \"100\", \"useDca\": true, \"startCondition\": \"ASAP\" }, \"from\": 1640995200000, \"to\": 1672531199000, \"interval\": \"1h\" } } }. Requires write API key permission.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1034,7 +1186,7 @@ const tools: Tool[] = [
           type: "object",
           minProperties: 1,
           description:
-            "Backtest payload containing data (exchange, exchangeUUID, settings, from, to, interval)",
+            "Full backtest request wrapper. Expected nesting is payload.data.settings. Required outer shape: { payload: { data: { exchange, exchangeUUID, settings, from, to, interval } } }.",
         },
         ...paperContextParam,
       },
@@ -1044,7 +1196,7 @@ const tools: Tool[] = [
   {
     name: "request_backtest",
     description:
-      "Submit a server-side backtest request (async). Returns a requestId for tracking. Credits are deducted. Requires write API key permission.",
+      "Submit a server-side backtest request for asynchronous processing. Discovery tools describe the inner bot settings object, but this tool expects the full request wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. Minimal valid example: { \"botType\": \"dca\", \"paperContext\": false, \"payload\": { \"data\": { \"exchange\": \"binance\", \"exchangeUUID\": \"650e8400-e29b-41d4-a716-446655440001\", \"settings\": { \"name\": \"BTC DCA Strategy\", \"pair\": [\"BTC_USDT\"], \"strategy\": \"LONG\", \"baseOrderSize\": \"100\", \"orderSize\": \"100\", \"orderSizeType\": \"quote\", \"startCondition\": \"ASAP\", \"useDca\": true, \"tpPerc\": \"2\" }, \"from\": 1640995200000, \"to\": 1672531199000, \"interval\": \"1h\" } } }. Returns a requestId for tracking. Credits are deducted. Requires write API key permission.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1057,7 +1209,7 @@ const tools: Tool[] = [
           type: "object",
           minProperties: 1,
           description:
-            "Backtest payload containing data (exchange, exchangeUUID, settings, from, to, interval)",
+            "Full backtest request wrapper. Expected nesting is payload.data.settings. Required outer shape: { payload: { data: { exchange, exchangeUUID, settings, from, to, interval } } }.",
         },
         ...paperContextParam,
       },
@@ -1067,7 +1219,7 @@ const tools: Tool[] = [
   {
     name: "request_backtest_sync",
     description:
-      "Submit a server-side backtest and wait for result (synchronous, up to 1 hour). Returns the full backtest result when complete, or a requestId if timed out. Requires write API key permission.",
+      "Submit a server-side backtest request and wait for completion. Discovery tools describe the inner bot settings object, but this tool expects the full request wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. Minimal valid example: { \"botType\": \"dca\", \"paperContext\": false, \"payload\": { \"data\": { \"exchange\": \"binance\", \"exchangeUUID\": \"650e8400-e29b-41d4-a716-446655440001\", \"settings\": { \"name\": \"BTC DCA Strategy\", \"pair\": [\"BTC_USDT\"], \"strategy\": \"LONG\", \"baseOrderSize\": \"100\", \"orderSize\": \"100\", \"orderSizeType\": \"quote\", \"startCondition\": \"ASAP\", \"useDca\": true, \"tpPerc\": \"2\" }, \"from\": 1640995200000, \"to\": 1672531199000, \"interval\": \"1h\" } } }. Returns the full backtest result when complete, or a requestId if timed out. Requires write API key permission.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1080,7 +1232,7 @@ const tools: Tool[] = [
           type: "object",
           minProperties: 1,
           description:
-            "Backtest payload containing data (exchange, exchangeUUID, settings, from, to, interval)",
+            "Full backtest request wrapper. Expected nesting is payload.data.settings. Required outer shape: { payload: { data: { exchange, exchangeUUID, settings, from, to, interval } } }.",
         },
         ...fieldsParam,
         ...paperContextParam,
@@ -1131,7 +1283,7 @@ const tools: Tool[] = [
   {
     name: "validate_backtest_payload",
     description:
-      "Validate backtest bot settings without creating a bot or dispatching a backtest. Returns normalized settings after defaults are applied. Requires write API key permission.",
+      "Validate a bot backtest request without creating a bot or dispatching a backtest. Use this after building settings from discovery and before estimating cost or submitting a backtest. Discovery tools describe the inner bot settings object, but this tool validates the full request body with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. Minimal valid example: { \"botType\": \"dca\", \"paperContext\": false, \"payload\": { \"data\": { \"exchange\": \"binance\", \"exchangeUUID\": \"650e8400-e29b-41d4-a716-446655440001\", \"settings\": { \"pair\": [\"BTC_USDT\"], \"strategy\": \"LONG\" }, \"from\": 1640995200000, \"to\": 1672531199000, \"interval\": \"1h\" } } }. Returns normalized settings after defaults are applied. Requires write API key permission.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1144,7 +1296,7 @@ const tools: Tool[] = [
           type: "object",
           minProperties: 1,
           description:
-            "Validation payload containing data.exchange, data.exchangeUUID, data.settings, and optional from/to/interval",
+            "Full validation request wrapper. Expected nesting is payload.data.settings. Required outer shape: { payload: { data: { exchange, exchangeUUID, settings, from, to, interval } } }.",
         },
         ...paperContextParam,
       },
@@ -1166,7 +1318,7 @@ const tools: Tool[] = [
   {
     name: "get_discovery_bot",
     description:
-      "Get the full schema definition for a single bot type, or a single section when 'section' is provided.",
+      "Return the schema for a bot type or a single bot section. Use this tool to learn the valid fields for the inner bot settings object used in bot creation, validation, and backtesting. It describes settings fields such as baseOrderSize, orderSize, ordersCount, step, and tpPerc, but it does not define the full backtest request wrapper. For backtest tools, discovered settings belong under payload.data.settings. Recommended flow: inspect sections -> build settings -> wrap in payload -> validate -> estimate -> request.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1186,7 +1338,7 @@ const tools: Tool[] = [
   {
     name: "get_discovery_bot_sections",
     description:
-      "List lightweight section summaries for a bot type, including id, name, description, and fieldCount.",
+      "List the available schema sections for a bot type, including id, name, description, and fieldCount. Use this tool to navigate the inner bot settings schema before requesting full field definitions for a single section. It does not define the outer request envelope for backtest tools. For backtesting, the discovered settings must be placed under payload.data.settings. Recommended flow: list sections -> fetch section details -> build settings -> wrap in payload -> validate.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2007,40 +2159,256 @@ async function handleToolCall(
 
 // ── MCP Server Setup ────────────────────────────────────────────────────────
 
-const server = new Server(
-  { name: "gainium-mcp", version: "2.1.0" },
-  { capabilities: { tools: {} } }
-);
+function createMcpServer(): Server {
+  const server = new Server(
+    { name: SERVER_NAME, version: SERVER_VERSION },
+    { capabilities: { tools: {} } }
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: toolArgs } = request.params;
-  try {
-    const result = await handleToolCall(name, toolArgs ?? {});
-    return { content: [{ type: "text" as const, text: result }] };
-  } catch (error: any) {
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Error: ${error?.message ?? String(error)}`,
-        },
-      ],
-      isError: true,
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: toolArgs } = request.params;
+    try {
+      const result = await handleToolCall(name, toolArgs ?? {});
+      return { content: [{ type: "text" as const, text: result }] };
+    } catch (error: any) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: ${error?.message ?? String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  return server;
+}
+
+async function startStdioServer(): Promise<void> {
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error(`[${SERVER_NAME}] Server started over stdio (v${SERVER_VERSION})`);
+}
+
+async function startHttpServer(): Promise<void> {
+  const streamableSessions = new Map<string, StreamableHTTPServerTransport>();
+  const sseSessions = new Map<string, SSEServerTransport>();
+
+  const closeAllSessions = async (): Promise<void> => {
+    const openTransports = [
+      ...streamableSessions.values(),
+      ...sseSessions.values(),
+    ];
+
+    await Promise.allSettled(openTransports.map((transport) => transport.close()));
+    streamableSessions.clear();
+    sseSessions.clear();
+  };
+
+  const httpServer = createServer(async (req, res) => {
+    try {
+      if (!req.url || !req.method) {
+        writeTextResponse(res, 400, "Invalid request");
+        return;
+      }
+
+      const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+
+      if (url.pathname === MCP_HTTP_PATH) {
+        if (!["GET", "POST", "DELETE"].includes(req.method)) {
+          writeMethodNotAllowed(res, ["GET", "POST", "DELETE"]);
+          return;
+        }
+
+        const sessionId = getHeaderValue(req.headers["mcp-session-id"]);
+        const parsedBody = req.method === "POST" ? await readJsonBody(req) : undefined;
+
+        if (sessionId) {
+          const transport = streamableSessions.get(sessionId);
+          if (!transport) {
+            if (sseSessions.has(sessionId)) {
+              writeJsonRpcError(
+                res,
+                400,
+                "Bad Request: Session exists but uses the deprecated SSE transport"
+              );
+              return;
+            }
+
+            writeJsonRpcError(res, 404, "Session not found", -32001);
+            return;
+          }
+
+          await transport.handleRequest(req, res, parsedBody);
+          return;
+        }
+
+        if (req.method !== "POST" || !isInitializeRequest(parsedBody)) {
+          writeJsonRpcError(
+            res,
+            400,
+            "Bad Request: No valid MCP session ID provided"
+          );
+          return;
+        }
+
+        let transport: StreamableHTTPServerTransport;
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            streamableSessions.set(newSessionId, transport);
+          },
+        });
+
+        transport.onclose = () => {
+          const activeSessionId = transport.sessionId;
+          if (activeSessionId) {
+            streamableSessions.delete(activeSessionId);
+          }
+        };
+
+        const server = createMcpServer();
+        await server.connect(transport);
+        await transport.handleRequest(req, res, parsedBody);
+        return;
+      }
+
+      if (url.pathname === MCP_SSE_PATH) {
+        if (req.method !== "GET") {
+          writeMethodNotAllowed(res, ["GET"]);
+          return;
+        }
+
+        const transport = new SSEServerTransport(MCP_MESSAGES_PATH, res);
+        sseSessions.set(transport.sessionId, transport);
+        transport.onclose = () => {
+          sseSessions.delete(transport.sessionId);
+        };
+
+        const server = createMcpServer();
+        await server.connect(transport);
+        return;
+      }
+
+      if (url.pathname === MCP_MESSAGES_PATH) {
+        if (req.method !== "POST") {
+          writeMethodNotAllowed(res, ["POST"]);
+          return;
+        }
+
+        const sessionId = url.searchParams.get("sessionId");
+        if (!sessionId) {
+          writeTextResponse(res, 400, "Missing sessionId query parameter");
+          return;
+        }
+
+        const transport = sseSessions.get(sessionId);
+        if (!transport) {
+          if (streamableSessions.has(sessionId)) {
+            writeJsonRpcError(
+              res,
+              400,
+              "Bad Request: Session exists but uses Streamable HTTP"
+            );
+            return;
+          }
+
+          writeTextResponse(res, 404, "Session not found");
+          return;
+        }
+
+        await transport.handlePostMessage(req, res);
+        return;
+      }
+
+      writeTextResponse(res, 404, "Not Found");
+    } catch (error: any) {
+      console.error(`[${SERVER_NAME}] HTTP transport error:`, error);
+
+      if (!res.headersSent) {
+        const message = error?.message || "Internal server error";
+        if (req.url?.startsWith(MCP_HTTP_PATH)) {
+          writeJsonRpcError(res, 500, message, -32603);
+        } else {
+          writeTextResponse(res, 500, message);
+        }
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    }
+  });
+
+  let isShuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (isShuttingDown) {
+      return;
+    }
+    isShuttingDown = true;
+
+    console.error(`[${SERVER_NAME}] Shutting down HTTP server (${signal})`);
+    await closeAllSessions();
+    await new Promise<void>((resolve, reject) => {
+      httpServer.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+    process.exit(0);
+  };
+
+  process.once("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+  process.once("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      httpServer.off("listening", onListening);
+      reject(error);
     };
-  }
-});
+    const onListening = () => {
+      httpServer.off("error", onError);
+      resolve();
+    };
+
+    httpServer.once("error", onError);
+    httpServer.once("listening", onListening);
+    httpServer.listen(HTTP_PORT, HTTP_HOST);
+  });
+
+  console.error(
+    `[${SERVER_NAME}] HTTP server started on http://${HTTP_HOST}:${HTTP_PORT}`
+  );
+  console.error(
+    `[${SERVER_NAME}] Streamable HTTP endpoint: ${MCP_HTTP_PATH} (GET/POST/DELETE)`
+  );
+  console.error(
+    `[${SERVER_NAME}] Deprecated SSE endpoints: ${MCP_SSE_PATH} (GET), ${MCP_MESSAGES_PATH} (POST)`
+  );
+}
 
 // ── Start ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("[gainium-mcp] Server started (v2.1.0)");
+  if (TRANSPORT_MODE === "http") {
+    await startHttpServer();
+    return;
+  }
+
+  await startStdioServer();
 }
 
 main().catch((err) => {
-  console.error("[gainium-mcp] Fatal error:", err);
+  console.error(`[${SERVER_NAME}] Fatal error:`, err);
   process.exit(1);
 });
