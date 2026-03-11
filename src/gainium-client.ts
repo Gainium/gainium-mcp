@@ -39,6 +39,7 @@ export class GainiumClient {
     options?: {
       query?: Record<string, QueryValue>;
       body?: Record<string, any>;
+      headers?: Record<string, string>;
     }
   ): Promise<GainiumResponse<T>> {
     // Build query string
@@ -80,6 +81,7 @@ export class GainiumClient {
         token: this.apiKey,
         time: timestamp.toString(),
         signature: signature,
+        ...(options?.headers || {}),
       },
     };
 

@@ -35,7 +35,7 @@ That's it. The server starts automatically when your AI assistant needs it.
 | `GAINIUM_API_SECRET` | Yes | — | Your Gainium API secret |
 | `GAINIUM_API_BASE_URL` | No | `https://api.gainium.io` | API base URL |
 
-## Available Tools (31)
+## Available Tools (48)
 
 ### Bots — Read
 
@@ -61,29 +61,61 @@ That's it. The server starts automatically when your AI assistant needs it.
 | `update_combo_bot` | Update Combo bot settings |
 | `clone_dca_bot` | Clone a DCA bot with optional overrides |
 | `clone_combo_bot` | Clone a Combo bot with optional overrides |
+| `clone_grid_bot` | Clone a Grid bot with optional overrides |
 
 ### Bots — Lifecycle
 
 | Tool | Description |
 |---|---|
-| `start_bot` | Start a bot |
+| `start_bot` | Start a bot (dca, combo, or grid) |
 | `stop_bot` | Stop a running bot |
-| `archive_bot` | Archive a stopped bot |
+| `archive_bot` | Archive a stopped bot (soft delete) |
 | `restore_bot` | Restore an archived bot |
-| `change_bot_pairs` | Change trading pairs for a bot |
+| `change_bot_pairs` | Change trading pairs for a DCA bot |
 
-### Deals
+### Deals — Read
 
 | Tool | Description |
 |---|---|
-| `get_deals` | List deals with filters (type, status, botId) |
+| `get_dca_deals` | List DCA deals with filters and field selection |
+| `get_combo_deals` | List Combo deals with filters and field selection |
+| `get_terminal_deals` | List Terminal deals with filters and field selection |
+
+### Deals — Create & Manage
+
+| Tool | Description |
+|---|---|
 | `create_terminal_deal` | Create a one-time terminal deal |
 | `update_dca_deal` | Update active DCA deal settings |
 | `update_combo_deal` | Update active Combo deal settings |
+| `update_terminal_deal` | Update active Terminal deal settings |
 | `start_deal` | Start a new deal for a bot |
-| `close_deal` | Close an active deal |
-| `add_funds` | Add funds to a deal |
-| `reduce_funds` | Reduce funds from a deal |
+| `close_deal` | Close an active deal (dca, combo, or terminal) |
+| `add_funds` | Add funds to a DCA deal |
+| `reduce_funds` | Reduce funds from a DCA deal |
+| `add_funds_terminal` | Add funds to a Terminal deal |
+| `reduce_funds_terminal` | Reduce funds from a Terminal deal |
+
+### Backtest
+
+| Tool | Description |
+|---|---|
+| `estimate_backtest_cost` | Estimate backtest cost in credits |
+| `request_backtest` | Submit async backtest request |
+| `request_backtest_sync` | Submit backtest and wait for result (up to 1h) |
+| `get_backtest_requests` | List backtest requests for a bot type |
+| `get_backtest_request` | Get a single backtest request by ID |
+| `validate_backtest_payload` | Validate bot settings and return normalized backtest payload |
+
+### Discovery
+
+| Tool | Description |
+|---|---|
+| `get_discovery_bots` | List schema definitions for all bot types |
+| `get_discovery_bot` | Get the full schema definition for one bot type |
+| `get_discovery_bot_sections` | List section summaries for one bot type |
+| `get_discovery_indicators` | List supported indicator types and capabilities |
+| `get_discovery_indicator` | Get the full field definition for one indicator type |
 
 ### User & Account
 
