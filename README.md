@@ -27,6 +27,8 @@ Add this to your MCP configuration (VS Code, Claude Desktop, etc.):
 
 That's it. The server starts automatically when your AI assistant needs it.
 
+This local stdio mode uses `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` from the server process environment.
+
 ### Environment Variables
 
 | Variable | Required | Default | Description |
@@ -41,13 +43,20 @@ That's it. The server starts automatically when your AI assistant needs it.
 | `GAINIUM_MCP_SSE_PATH` | No | `/sse` | Deprecated SSE GET endpoint path |
 | `GAINIUM_MCP_MESSAGES_PATH` | No | `/messages` | Deprecated SSE POST endpoint path |
 
+## Authentication Modes
+
+`gainium-mcp` supports both deployment models:
+
+- Local stdio mode: the MCP server reads `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` from env vars.
+- Hosted HTTP mode: each request can send `X-API-Key` and `X-API-Secret` headers so one shared server can serve many users.
+
+For HTTP mode, request headers take priority. If the headers are missing, the server falls back to `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` if they are set.
+
 ## HTTP and SSE Mode
 
 By default, `gainium-mcp` runs over stdio for MCP clients that spawn local processes. To run it as an HTTP server instead:
 
 ```bash
-export GAINIUM_API_KEY=your_key
-export GAINIUM_API_SECRET=your_secret
 export GAINIUM_MCP_TRANSPORT=http
 export GAINIUM_MCP_HOST=127.0.0.1
 export GAINIUM_MCP_PORT=3000
@@ -59,7 +68,7 @@ When HTTP mode is enabled, the server exposes both transport styles:
 - `GET|POST|DELETE /mcp` for the current Streamable HTTP transport
 - `GET /sse` plus `POST /messages?sessionId=...` for deprecated HTTP+SSE clients
 
-This makes one server process compatible with both modern MCP HTTP clients and older SSE-based integrations.
+This makes one server process compatible with both modern MCP HTTP clients and older SSE-based integrations. In hosted mode, callers should send their Gainium credentials on each request as `X-API-Key` and `X-API-Secret`.
 
 ## Available Tools (48)
 

@@ -14,6 +14,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   isInitializeRequest,
+  type IsomorphicHeaders,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { GainiumClient } from "./gainium-client.js";
@@ -47,15 +48,6 @@ const MCP_MESSAGES_PATH = normalizePath(
     process.env.MCP_MESSAGES_PATH ||
     "/messages"
 );
-
-if (!API_KEY || !API_SECRET) {
-  console.error(
-    "[gainium-mcp] Missing required environment variables: GAINIUM_API_KEY, GAINIUM_API_SECRET"
-  );
-  process.exit(1);
-}
-
-const client = new GainiumClient(BASE_URL, API_KEY, API_SECRET);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -102,6 +94,39 @@ function getHeaderValue(
   value: string | string[] | undefined
 ): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function getRequestHeader(
+  headers: IsomorphicHeaders | undefined,
+  name: string
+): string | undefined {
+  if (!headers) {
+    return undefined;
+  }
+
+  const targetName = name.toLowerCase();
+  for (const [headerName, headerValue] of Object.entries(headers)) {
+    if (headerName.toLowerCase() === targetName) {
+      return getHeaderValue(headerValue);
+    }
+  }
+
+  return undefined;
+}
+
+function createGainiumClientFromHeaders(
+  headers: IsomorphicHeaders | undefined
+): GainiumClient {
+  const apiKey = getRequestHeader(headers, "x-api-key") || API_KEY;
+  const apiSecret = getRequestHeader(headers, "x-api-secret") || API_SECRET;
+
+  if (!apiKey || !apiSecret) {
+    throw new Error(
+      "Missing Gainium credentials. Provide 'X-API-Key' and 'X-API-Secret' request headers for hosted HTTP mode, or set GAINIUM_API_KEY and GAINIUM_API_SECRET for local stdio mode."
+    );
+  }
+
+  return new GainiumClient(BASE_URL, apiKey, apiSecret);
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -1554,7 +1579,8 @@ const tools: Tool[] = [
 
 async function handleToolCall(
   name: string,
-  args: Record<string, any>
+  args: Record<string, any>,
+  client: GainiumClient
 ): Promise<string> {
   validateToolArgs(name, args);
 
@@ -2167,10 +2193,11 @@ function createMcpServer(): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: toolArgs } = request.params;
     try {
-      const result = await handleToolCall(name, toolArgs ?? {});
+      const client = createGainiumClientFromHeaders(extra.requestInfo?.headers);
+      const result = await handleToolCall(name, toolArgs ?? {}, client);
       return { content: [{ type: "text" as const, text: result }] };
     } catch (error: any) {
       return {
