@@ -1,6 +1,6 @@
 {
   "name": "gainium-mcp",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "type": "module",
   "description": "MCP server for Gainium trading bot platform — manage bots, deals, balances and more via AI assistants",
   "main": "dist/server.js",
@@ -14,9 +14,13 @@
   ],
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "tsc && node dist/server.js",
-    "prepublishOnly": "npm run build"
+    "start": "node -r dotenv/config dist/server.js",
+    "dev": "tsc && node -r dotenv/config dist/server.js",
+    "prepublishOnly": "npm run build",
+    "pm:start": "pm2 start ecosystem.config.cjs ",
+    "pm:stop": "pm2 stop ecosystem.config.cjs ",
+    "pm:restart": "pm2 restart ecosystem.config.cjs ",
+    "pm:delete": "pm2 delete ecosystem.config.cjs "
   },
   "keywords": [
     "mcp",
@@ -39,7 +43,8 @@
     "url": "https://github.com/nicogainium/gainium-mcp/issues"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0"
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "dotenv": "^17.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
