@@ -1,446 +1,631 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
+import { randomUUID } from 'node:crypto'
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
-} from "node:http";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+} from 'node:http'
+import { fileURLToPath } from 'node:url'
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
   isInitializeRequest,
   type IsomorphicHeaders,
   type Tool,
-} from "@modelcontextprotocol/sdk/types.js";
-import { GainiumClient } from "./gainium-client.js";
+} from '@modelcontextprotocol/sdk/types.js'
+import { GainiumClient } from './gainium-client.js'
 
 // ── Environment ──────────────────────────────────────────────────────────────
 
-const SERVER_NAME = "gainium-mcp";
-const SERVER_VERSION = "2.3.0";
+const SERVER_NAME = 'gainium-mcp'
+const SERVER_VERSION = '2.3.0'
 
-const API_KEY = process.env.GAINIUM_API_KEY;
-const API_SECRET = process.env.GAINIUM_API_SECRET;
-const ALLOWED_BOT_ID = process.env.GAINIUM_ALLOWED_BOT_ID?.trim() || undefined;
+const API_KEY = process.env.GAINIUM_API_KEY
+const API_SECRET = process.env.GAINIUM_API_SECRET
+const ALLOWED_BOT_ID = process.env.GAINIUM_ALLOWED_BOT_ID?.trim() || undefined
 const PAPER_ONLY =
-  process.env.GAINIUM_PAPER_ONLY?.trim().toLowerCase() === "true";
-const BASE_URL =
-  process.env.GAINIUM_API_BASE_URL || "https://api.gainium.io";
+  process.env.GAINIUM_PAPER_ONLY?.trim().toLowerCase() === 'true'
+const BASE_URL = process.env.GAINIUM_API_BASE_URL || 'https://api.gainium.io'
 const TRANSPORT_MODE = resolveTransportMode(
-  process.env.GAINIUM_MCP_TRANSPORT || process.env.MCP_TRANSPORT
-);
+  process.env.GAINIUM_MCP_TRANSPORT || process.env.MCP_TRANSPORT,
+)
 const HTTP_HOST =
-  process.env.GAINIUM_MCP_HOST || process.env.MCP_HOST || "127.0.0.1";
+  process.env.GAINIUM_MCP_HOST || process.env.MCP_HOST || '127.0.0.1'
 const HTTP_PORT = resolvePort(
   process.env.GAINIUM_MCP_PORT || process.env.MCP_PORT || process.env.PORT,
-  3000
-);
+  3000,
+)
 const MCP_HTTP_PATH = normalizePath(
-  process.env.GAINIUM_MCP_HTTP_PATH || process.env.MCP_HTTP_PATH || "/mcp"
-);
+  process.env.GAINIUM_MCP_HTTP_PATH || process.env.MCP_HTTP_PATH || '/mcp',
+)
 const MCP_SSE_PATH = normalizePath(
-  process.env.GAINIUM_MCP_SSE_PATH || process.env.MCP_SSE_PATH || "/sse"
-);
+  process.env.GAINIUM_MCP_SSE_PATH || process.env.MCP_SSE_PATH || '/sse',
+)
 const MCP_MESSAGES_PATH = normalizePath(
   process.env.GAINIUM_MCP_MESSAGES_PATH ||
     process.env.MCP_MESSAGES_PATH ||
-    "/messages"
-);
+    '/messages',
+)
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function resolveTransportMode(value: string | undefined): "stdio" | "http" {
-  switch ((value || "stdio").trim().toLowerCase()) {
-    case "":
-    case "stdio":
-      return "stdio";
-    case "http":
-    case "sse":
-    case "http-sse":
-    case "streamable-http":
-      return "http";
+function resolveTransportMode(value: string | undefined): 'stdio' | 'http' {
+  switch ((value || 'stdio').trim().toLowerCase()) {
+    case '':
+    case 'stdio':
+      return 'stdio'
+    case 'http':
+    case 'sse':
+    case 'http-sse':
+    case 'streamable-http':
+      return 'http'
     default:
       throw new Error(
-        `Unsupported transport mode: ${value}. Use one of: stdio, http, streamable-http, sse, http-sse`
-      );
+        `Unsupported transport mode: ${value}. Use one of: stdio, http, streamable-http, sse, http-sse`,
+      )
   }
 }
 
 function resolvePort(value: string | undefined, fallback: number): number {
   if (!value) {
-    return fallback;
+    return fallback
   }
 
-  const parsed = Number.parseInt(value, 10);
+  const parsed = Number.parseInt(value, 10)
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
-    throw new Error(`Invalid port: ${value}`);
+    throw new Error(`Invalid port: ${value}`)
   }
 
-  return parsed;
+  return parsed
 }
 
 function normalizePath(value: string): string {
-  const trimmed = value.trim();
+  const trimmed = value.trim()
   if (!trimmed) {
-    return "/";
+    return '/'
   }
 
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
 }
 
 function getHeaderValue(
-  value: string | string[] | undefined
+  value: string | string[] | undefined,
 ): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
+  return Array.isArray(value) ? value[0] : value
 }
 
 function getRequestHeader(
   headers: IsomorphicHeaders | undefined,
-  name: string
+  name: string,
 ): string | undefined {
   if (!headers) {
-    return undefined;
+    return undefined
   }
 
-  const targetName = name.toLowerCase();
+  const targetName = name.toLowerCase()
   for (const [headerName, headerValue] of Object.entries(headers)) {
     if (headerName.toLowerCase() === targetName) {
-      return getHeaderValue(headerValue);
+      return getHeaderValue(headerValue)
     }
   }
 
-  return undefined;
+  return undefined
 }
 
 function createGainiumClientFromHeaders(
-  headers: IsomorphicHeaders | undefined
+  headers: IsomorphicHeaders | undefined,
 ): GainiumClient {
-  const apiKey = getRequestHeader(headers, "x-api-key") || API_KEY;
-  const apiSecret = getRequestHeader(headers, "x-api-secret") || API_SECRET;
+  const apiKey = getRequestHeader(headers, 'x-api-key') || API_KEY
+  const apiSecret = getRequestHeader(headers, 'x-api-secret') || API_SECRET
 
   if (!apiKey || !apiSecret) {
     throw new Error(
-      "Missing Gainium credentials. Provide 'X-API-Key' and 'X-API-Secret' request headers for hosted HTTP mode, or set GAINIUM_API_KEY and GAINIUM_API_SECRET for local stdio mode."
-    );
+      "Missing Gainium credentials. Provide 'X-API-Key' and 'X-API-Secret' request headers for hosted HTTP mode, or set GAINIUM_API_KEY and GAINIUM_API_SECRET for local stdio mode.",
+    )
   }
 
-  return new GainiumClient(BASE_URL, apiKey, apiSecret);
+  return new GainiumClient(BASE_URL, apiKey, apiSecret)
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
+  const chunks: Buffer[] = []
 
   for await (const chunk of req) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
   }
 
   if (chunks.length === 0) {
-    return undefined;
+    return undefined
   }
 
-  const rawBody = Buffer.concat(chunks).toString("utf8").trim();
+  const rawBody = Buffer.concat(chunks).toString('utf8').trim()
   if (!rawBody) {
-    return undefined;
+    return undefined
   }
 
   try {
-    return JSON.parse(rawBody);
+    return JSON.parse(rawBody)
   } catch {
-    throw new Error("Request body must be valid JSON");
+    throw new Error('Request body must be valid JSON')
   }
 }
 
 function writeTextResponse(
   res: ServerResponse,
   statusCode: number,
-  message: string
+  message: string,
 ): void {
-  res.statusCode = statusCode;
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.end(message);
+  res.statusCode = statusCode
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+  res.end(message)
 }
 
 function writeJsonRpcError(
   res: ServerResponse,
   statusCode: number,
   message: string,
-  code = -32000
+  code = -32000,
 ): void {
-  res.statusCode = statusCode;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.statusCode = statusCode
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.end(
     JSON.stringify({
-      jsonrpc: "2.0",
+      jsonrpc: '2.0',
       error: { code, message },
       id: null,
-    })
-  );
+    }),
+  )
 }
 
 function writeMethodNotAllowed(
   res: ServerResponse,
-  allowedMethods: string[]
+  allowedMethods: string[],
 ): void {
-  res.statusCode = 405;
-  res.setHeader("Allow", allowedMethods.join(", "));
-  res.end("Method Not Allowed");
+  res.statusCode = 405
+  res.setHeader('Allow', allowedMethods.join(', '))
+  res.end('Method Not Allowed')
 }
 
-function paperHeader(
-  args: Record<string, any>
-): Record<string, string> {
-  const headers: Record<string, string> = {};
+function paperHeader(args: Record<string, any>): Record<string, string> {
+  const headers: Record<string, string> = {}
   if (args.paperContext !== undefined && args.paperContext !== null) {
-    headers["paper-context"] = String(args.paperContext);
+    headers['paper-context'] = String(args.paperContext)
   }
-  return headers;
+  return headers
 }
 
 function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+  return typeof value === 'string' && value.trim().length > 0
 }
 
 function isPlainObject(value: unknown): value is Record<string, any> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function hasKeys(value: unknown): value is Record<string, any> {
-  return isPlainObject(value) && Object.keys(value).length > 0;
+  return isPlainObject(value) && Object.keys(value).length > 0
 }
 
 const BOT_FILTER_LIST_TOOLS = new Set([
-  "get_dca_bots",
-  "get_combo_bots",
-  "get_grid_bots",
-  "get_dca_deals",
-  "get_combo_deals",
-  "get_terminal_deals",
-]);
+  'get_dca_bots',
+  'get_combo_bots',
+  'get_grid_bots',
+  'get_dca_deals',
+  'get_combo_deals',
+  'get_terminal_deals',
+])
 
 function enforceGuards(args: Record<string, any>): void {
-  const toolName = args.__toolName;
+  const toolName = args.__toolName
 
   if (ALLOWED_BOT_ID) {
     if (BOT_FILTER_LIST_TOOLS.has(toolName)) {
-      args.botId = ALLOWED_BOT_ID;
+      args.botId = ALLOWED_BOT_ID
     } else if (
       args.botId !== undefined &&
       args.botId !== null &&
       args.botId !== ALLOWED_BOT_ID
     ) {
       throw new Error(
-        `Bot ID '${args.botId}' is not allowed. This instance is restricted to bot '${ALLOWED_BOT_ID}'.`
-      );
+        `Bot ID '${args.botId}' is not allowed. This instance is restricted to bot '${ALLOWED_BOT_ID}'.`,
+      )
     }
   }
 
   if (PAPER_ONLY) {
     if (args.paperContext === false) {
       throw new Error(
-        "Live trading is disabled. This instance is restricted to paper trading only. Set paperContext to true or omit it."
-      );
+        'Live trading is disabled. This instance is restricted to paper trading only. Set paperContext to true or omit it.',
+      )
     }
 
     if (args.paperContext === undefined || args.paperContext === null) {
-      args.paperContext = true;
+      args.paperContext = true
     }
   }
 }
 
-function validateBacktestPayloadShape(args: Record<string, any>): void {
+export function validateBacktestPayloadShape(args: Record<string, any>): void {
   if (!hasKeys(args.payload)) {
     throw new Error(
-      "Missing required top-level field 'payload'. Expected shape: { payload: { data: { exchange, exchangeUUID, settings, from?, to?, interval? } } }"
-    );
+      "Missing required top-level field 'payload'. Expected shape: { payload: { data: { exchange, exchangeUUID, settings, from?, to?, interval? } } }" +
+        '\nRecovery: {"missingField":"payload","suggestedTools":["build_backtest_payload_template","get_backtest_operation_schema"]}',
+    )
   }
 
   if (!hasKeys(args.payload.data)) {
     throw new Error(
-      "Missing required object 'payload.data'. Place bot settings under 'payload.data.settings'."
-    );
+      "Missing required object 'payload.data'. Place bot settings under 'payload.data.settings'. " +
+        'Expected shape: { payload: { data: { exchange: string, exchangeUUID: string, settings: { ... }, from?: number, to?: number, interval?: string } } }' +
+        '\nRecovery: {"missingObject":"payload.data","suggestedTools":["build_backtest_payload_template"]}',
+    )
+  }
+
+  if (!isNonEmptyString(args.payload.data.exchange)) {
+    throw new Error(
+      'Missing \'payload.data.exchange\'. Provide the exchange code string, e.g. "binance" or "okxLinear". ' +
+        'Use get_supported_exchanges to list valid codes, or get_user_exchanges to see your connected exchanges.' +
+        '\nRecovery: {"missingField":"payload.data.exchange","suggestedTools":["get_supported_exchanges","get_user_exchanges"]}',
+    )
+  }
+
+  if (!isNonEmptyString(args.payload.data.exchangeUUID)) {
+    throw new Error(
+      "Missing 'payload.data.exchangeUUID'. Use get_user_exchanges to retrieve the UUID for your exchange connection." +
+        '\nRecovery: {"missingField":"payload.data.exchangeUUID","suggestedTools":["get_user_exchanges"]}',
+    )
   }
 
   if (!hasKeys(args.payload.data.settings)) {
     throw new Error(
-      "Missing required object 'payload.data.settings'. Use discovery tools to build the inner bot settings object, then place it under 'payload.data.settings'."
-    );
+      "Missing required object 'payload.data.settings'. Use get_discovery_bot(botType) to learn valid settings fields, " +
+        'or call build_backtest_payload_template(botType) to get a ready-to-fill scaffold.' +
+        '\nRecovery: {"missingObject":"payload.data.settings","suggestedTools":["get_discovery_bot","build_backtest_payload_template"]}',
+    )
   }
 }
 
-function validateToolArgs(name: string, args: Record<string, any>): void {
+export function validateToolArgs(
+  name: string,
+  args: Record<string, any>,
+): void {
   if (
-    ["update_dca_bot", "update_combo_bot", "update_dca_deal", "update_combo_deal", "update_terminal_deal"].includes(
-      name
-    )
+    [
+      'update_dca_bot',
+      'update_combo_bot',
+      'update_dca_deal',
+      'update_combo_deal',
+      'update_terminal_deal',
+    ].includes(name)
   ) {
     if (!hasKeys(args.settings)) {
-      throw new Error("'settings' must be a non-empty object");
+      throw new Error("'settings' must be a non-empty object")
+    }
+
+    // Boolean-gate enforcement: value fields are silently ignored by the API
+    // unless their feature toggle is explicitly set to true in the SAME call.
+    const s = args.settings as Record<string, any>
+    const gateViolations: string[] = []
+
+    const dcaValueFields = [
+      'ordersCount',
+      'orderSize',
+      'step',
+      'volumeScale',
+      'stepScale',
+      'dcaCondition',
+      'dcaCustom',
+      'dcaVolumeBaseOn',
+      'dcaVolumeRequiredChange',
+      'dcaVolumeMaxValue',
+    ]
+    if (dcaValueFields.some((f) => f in s) && s.useDca !== true) {
+      gateViolations.push(
+        `You are setting DCA order fields (${dcaValueFields.filter((f) => f in s).join(', ')}) but 'useDca' is not true in the same settings object. ` +
+          'The API will silently ignore these fields unless useDca is explicitly enabled. ' +
+          'Add "useDca": true to settings, or set "useDca": false if you intentionally want to disable DCA.',
+      )
+    }
+
+    // useTp gates: tpPerc, useMultiTp/multiTp sub-tree, trailingTp/trailingTpPerc sub-tree
+    const tpValueFields = [
+      'tpPerc',
+      'useMultiTp',
+      'multiTp',
+      'trailingTp',
+      'trailingTpPerc',
+      'useMinTP',
+      'minTp',
+      'useFixedTPPrices',
+      'fixedTpPrice',
+    ]
+    if (tpValueFields.some((f) => f in s) && s.useTp !== true) {
+      gateViolations.push(
+        `You are setting take-profit fields (${tpValueFields.filter((f) => f in s).join(', ')}) but 'useTp' is not true in the same settings object. ` +
+          'Add "useTp": true to settings.',
+      )
+    }
+
+    // trailingTp (sub-toggle under useTp) gates trailingTpPerc
+    if ('trailingTpPerc' in s && s.trailingTp !== true) {
+      gateViolations.push(
+        "You are setting 'trailingTpPerc' but 'trailingTp' is not true. Add \"trailingTp\": true to settings.",
+      )
+    }
+
+    // useMultiTp gates multiTp array
+    if ('multiTp' in s && s.useMultiTp !== true) {
+      gateViolations.push(
+        "You are setting 'multiTp' but 'useMultiTp' is not true. Add \"useMultiTp\": true to settings.",
+      )
+    }
+
+    // useSl gates: slPerc, trailingSl, useMultiSl/multiSl sub-tree
+    const slValueFields = [
+      'slPerc',
+      'trailingSl',
+      'useMultiSl',
+      'multiSl',
+      'useFixedSLPrices',
+      'fixedSlPrice',
+    ]
+    if (slValueFields.some((f) => f in s) && s.useSl !== true) {
+      gateViolations.push(
+        `You are setting stop-loss fields (${slValueFields.filter((f) => f in s).join(', ')}) but 'useSl' is not true in the same settings object. ` +
+          'Add "useSl": true to settings.',
+      )
+    }
+
+    // useMultiSl gates multiSl array
+    if ('multiSl' in s && s.useMultiSl !== true) {
+      gateViolations.push(
+        "You are setting 'multiSl' but 'useMultiSl' is not true. Add \"useMultiSl\": true to settings.",
+      )
+    }
+
+    // moveSL gates moveSLTrigger, moveSLValue, moveSLForAll
+    const moveSLValueFields = ['moveSLTrigger', 'moveSLValue', 'moveSLForAll']
+    if (moveSLValueFields.some((f) => f in s) && s.moveSL !== true) {
+      gateViolations.push(
+        `You are setting trailing SL fields (${moveSLValueFields.filter((f) => f in s).join(', ')}) but 'moveSL' is not true in the same settings object. ` +
+          'Add "moveSL": true to settings.',
+      )
+    }
+
+    // closeByTimer gates closeByTimerValue, closeByTimerUnits
+    const closeByTimerValueFields = ['closeByTimerValue', 'closeByTimerUnits']
+    if (
+      closeByTimerValueFields.some((f) => f in s) &&
+      s.closeByTimer !== true
+    ) {
+      gateViolations.push(
+        `You are setting close-by-timer fields (${closeByTimerValueFields.filter((f) => f in s).join(', ')}) but 'closeByTimer' is not true. ` +
+          'Add "closeByTimer": true to settings.',
+      )
+    }
+
+    if (gateViolations.length > 0) {
+      throw new Error(
+        'Boolean gate violation — feature values will be silently ignored by the API:\n' +
+          gateViolations.map((v, i) => `${i + 1}. ${v}`).join('\n'),
+      )
     }
   }
 
-  if (["clone_dca_bot", "clone_combo_bot", "clone_grid_bot"].includes(name)) {
+  if (['clone_dca_bot', 'clone_combo_bot', 'clone_grid_bot'].includes(name)) {
     if (!isNonEmptyString(args.botId)) {
-      throw new Error("'botId' is required");
+      throw new Error("'botId' is required")
     }
     if (args.overrides !== undefined && !isPlainObject(args.overrides)) {
-      throw new Error("'overrides' must be an object when provided");
+      throw new Error("'overrides' must be an object when provided")
     }
   }
 
-  if (["start_bot", "stop_bot", "archive_bot", "restore_bot"].includes(name)) {
+  if (['start_bot', 'archive_bot', 'restore_bot'].includes(name)) {
     if (!isNonEmptyString(args.botId)) {
-      throw new Error("'botId' is required");
+      throw new Error("'botId' is required")
     }
     if (!isNonEmptyString(args.botType)) {
-      throw new Error("'botType' is required");
+      throw new Error("'botType' is required")
     }
   }
 
-  if (name === "change_bot_pairs") {
+  if (name === 'stop_bot') {
     if (!isNonEmptyString(args.botId)) {
-      throw new Error("'botId' is required");
+      throw new Error("'botId' is required")
+    }
+    if (!isNonEmptyString(args.botType)) {
+      throw new Error("'botType' is required")
+    }
+    const isGrid = args.botType === 'grid'
+    if (!isGrid) {
+      const validCloseTypes = [
+        'leave',
+        'closeByMarket',
+        'closeByLimit',
+        'cancel',
+      ]
+      if (!isNonEmptyString(args.closeType)) {
+        throw new Error(
+          "'closeType' is required for stop_bot (dca/combo). " +
+            'Decide intent: "closeByMarket" to close all active deals immediately, ' +
+            '"leave" to pause the bot and keep deals open, "cancel" to cancel orders only.',
+        )
+      }
+      if (!validCloseTypes.includes(args.closeType)) {
+        throw new Error(
+          `'closeType' must be one of: ${validCloseTypes.join(', ')}. Got: "${args.closeType}"`,
+        )
+      }
+    } else {
+      const validGridTypes = ['cancel', 'closeByMarket', 'closeByLimit']
+      if (!isNonEmptyString(args.closeGridType)) {
+        throw new Error(
+          "'closeGridType' is required for stop_bot (grid). " +
+            'Choose: "cancel" to cancel grid orders, "closeByMarket" to close position at market.',
+        )
+      }
+      if (!validGridTypes.includes(args.closeGridType)) {
+        throw new Error(
+          `'closeGridType' must be one of: ${validGridTypes.join(', ')}. Got: "${args.closeGridType}"`,
+        )
+      }
+    }
+  }
+
+  if (name === 'change_bot_pairs') {
+    if (!isNonEmptyString(args.botId)) {
+      throw new Error("'botId' is required")
     }
     if (!Array.isArray(args.pair) || args.pair.length === 0) {
-      throw new Error("'pair' must be a non-empty array");
+      throw new Error("'pair' must be a non-empty array")
     }
   }
 
-  if (name === "start_deal") {
+  if (name === 'start_deal') {
     if (!isNonEmptyString(args.botId)) {
-      throw new Error("'botId' is required");
+      throw new Error("'botId' is required")
     }
     if (!isNonEmptyString(args.botType)) {
-      throw new Error("'botType' is required");
+      throw new Error("'botType' is required")
     }
   }
 
-  if (name === "close_deal") {
+  if (name === 'close_deal') {
     if (!isNonEmptyString(args.dealId)) {
-      throw new Error("'dealId' is required");
+      throw new Error("'dealId' is required")
     }
     if (!isNonEmptyString(args.dealType)) {
-      throw new Error("'dealType' is required");
+      throw new Error("'dealType' is required")
     }
     if (!isNonEmptyString(args.type)) {
-      throw new Error("'type' is required");
+      throw new Error("'type' is required")
     }
   }
 
-  if (["add_funds", "reduce_funds"].includes(name)) {
+  if (['add_funds', 'reduce_funds'].includes(name)) {
     if (!isNonEmptyString(args.qty)) {
-      throw new Error("'qty' is required");
+      throw new Error("'qty' is required")
     }
     if (!isNonEmptyString(args.dealId) && !isNonEmptyString(args.botId)) {
-      throw new Error("Either 'dealId' or 'botId' is required");
+      throw new Error("Either 'dealId' or 'botId' is required")
     }
-    const fundsType = isNonEmptyString(args.type) ? args.type : "fixed";
-    if (fundsType === "fixed" && !isNonEmptyString(args.asset)) {
-      throw new Error("'asset' is required when type is 'fixed'");
+    const fundsType = isNonEmptyString(args.type) ? args.type : 'fixed'
+    if (fundsType === 'fixed' && !isNonEmptyString(args.asset)) {
+      throw new Error("'asset' is required when type is 'fixed'")
     }
   }
 
-  if (["add_funds_terminal", "reduce_funds_terminal"].includes(name)) {
+  if (['add_funds_terminal', 'reduce_funds_terminal'].includes(name)) {
     if (!isNonEmptyString(args.dealId)) {
-      throw new Error("'dealId' is required");
+      throw new Error("'dealId' is required")
     }
     if (!isNonEmptyString(args.qty)) {
-      throw new Error("'qty' is required");
+      throw new Error("'qty' is required")
     }
-    const fundsType = isNonEmptyString(args.type) ? args.type : "fixed";
-    if (fundsType === "fixed" && !isNonEmptyString(args.asset)) {
-      throw new Error("'asset' is required when type is 'fixed'");
-    }
-  }
-
-  if (["estimate_backtest_cost", "request_backtest", "request_backtest_sync"].includes(name)) {
-    if (!isNonEmptyString(args.botType)) {
-      throw new Error("'botType' is required");
-    }
-    validateBacktestPayloadShape(args);
-  }
-
-  if (name === "validate_backtest_payload") {
-    if (!isNonEmptyString(args.botType)) {
-      throw new Error("'botType' is required");
-    }
-    validateBacktestPayloadShape(args);
-  }
-
-  if (name === "get_backtest_requests") {
-    if (!isNonEmptyString(args.botType)) {
-      throw new Error("'botType' is required");
+    const fundsType = isNonEmptyString(args.type) ? args.type : 'fixed'
+    if (fundsType === 'fixed' && !isNonEmptyString(args.asset)) {
+      throw new Error("'asset' is required when type is 'fixed'")
     }
   }
 
-  if (name === "get_backtest_request") {
+  if (
+    [
+      'estimate_backtest_cost',
+      'request_backtest',
+      'request_backtest_sync',
+    ].includes(name)
+  ) {
     if (!isNonEmptyString(args.botType)) {
-      throw new Error("'botType' is required");
+      throw new Error("'botType' is required")
+    }
+    validateBacktestPayloadShape(args)
+  }
+
+  if (name === 'validate_backtest_payload') {
+    if (!isNonEmptyString(args.botType)) {
+      throw new Error("'botType' is required")
+    }
+    validateBacktestPayloadShape(args)
+  }
+
+  if (name === 'get_backtest_requests') {
+    if (!isNonEmptyString(args.botType)) {
+      throw new Error("'botType' is required")
+    }
+  }
+
+  if (name === 'get_backtest_request') {
+    if (!isNonEmptyString(args.botType)) {
+      throw new Error("'botType' is required")
     }
     if (!isNonEmptyString(args.id)) {
-      throw new Error("'id' is required");
+      throw new Error("'id' is required")
     }
   }
 
-  if (["get_discovery_bot", "get_discovery_bot_sections"].includes(name)) {
+  if (['get_discovery_bot', 'get_discovery_bot_sections'].includes(name)) {
     if (!isNonEmptyString(args.botType)) {
-      throw new Error("'botType' is required");
+      throw new Error("'botType' is required")
     }
   }
 
-  if (name === "get_discovery_indicator") {
+  if (name === 'get_discovery_indicator') {
     if (!isNonEmptyString(args.type)) {
-      throw new Error("'type' is required");
+      throw new Error("'type' is required")
     }
   }
 
-  if (name === "create_terminal_deal") {
+  if (name === 'create_terminal_deal') {
     if (!isNonEmptyString(args.exchangeUUID)) {
-      throw new Error("'exchangeUUID' is required");
+      throw new Error("'exchangeUUID' is required")
     }
     if (!isNonEmptyString(args.terminalDealType)) {
-      throw new Error("'terminalDealType' is required");
+      throw new Error("'terminalDealType' is required")
     }
   }
 
-  if (name === "create_global_variable") {
+  if (name === 'create_global_variable') {
     if (!isNonEmptyString(args.name)) {
-      throw new Error("'name' is required");
+      throw new Error("'name' is required")
     }
     if (!isNonEmptyString(args.type)) {
-      throw new Error("'type' is required");
+      throw new Error("'type' is required")
     }
     if (!isNonEmptyString(args.value)) {
-      throw new Error("'value' is required");
+      throw new Error("'value' is required")
     }
   }
 
-  if (name === "update_global_variable") {
+  if (name === 'update_global_variable') {
     if (!isNonEmptyString(args.id)) {
-      throw new Error("'id' is required");
+      throw new Error("'id' is required")
     }
     if (
       args.name === undefined &&
       args.type === undefined &&
       args.value === undefined
     ) {
-      throw new Error("Provide at least one of: 'name', 'type', or 'value'");
+      throw new Error("Provide at least one of: 'name', 'type', or 'value'")
     }
   }
 
-  if (name === "delete_global_variable") {
+  if (name === 'delete_global_variable') {
     if (!isNonEmptyString(args.id)) {
-      throw new Error("'id' is required");
+      throw new Error("'id' is required")
     }
   }
 
-  if (name === "get_balances") {
+  if (name === 'get_balances') {
     if (isNonEmptyString(args.asset) && isNonEmptyString(args.assets)) {
-      throw new Error("Use either 'asset' or 'assets', not both");
+      throw new Error("Use either 'asset' or 'assets', not both")
     }
   }
 }
@@ -449,68 +634,188 @@ function validateToolArgs(name: string, args: Record<string, any>): void {
 
 const fieldsParam = {
   fields: {
-    type: "string" as const,
+    type: 'string' as const,
     description:
       'Field selection: preset ("minimal", "standard", "extended", "full") or comma-separated fields (e.g. "_id,uuid,settings.name,profit.total"). Default: "standard"',
   },
-};
+}
 
 const pageParam = {
   page: {
-    type: "integer" as const,
-    description: "Page number for pagination (1-based). Default: 1",
+    type: 'integer' as const,
+    description: 'Page number for pagination (1-based). Default: 1',
   },
-};
+}
 
 const botStatusParam = {
   status: {
-    type: "string" as const,
-    enum: ["open", "closed", "range", "error", "archive", "monitoring"],
-    description: "Filter by bot status",
+    type: 'string' as const,
+    enum: ['open', 'closed', 'range', 'error', 'archive', 'monitoring'],
+    description: 'Filter by bot status',
   },
-};
+}
 
 const dealStatusParam = {
   status: {
-    type: "string" as const,
-    enum: ["open", "closed", "start", "error", "canceled"],
-    description: "Filter by deal status",
+    type: 'string' as const,
+    enum: ['open', 'closed', 'start', 'error', 'canceled'],
+    description: 'Filter by deal status',
   },
-};
+}
 
 const paperContextParam = {
   paperContext: {
-    type: "boolean" as const,
+    type: 'boolean' as const,
     description:
-      "Paper trading context (true = paper, false = real). Default: false",
+      'Paper trading context (true = paper, false = real). Default: false',
   },
-};
+}
 
 const botIdRequired = {
   botId: {
-    type: "string" as const,
-    description: "Bot ID (MongoDB ObjectId)",
+    type: 'string' as const,
+    description: 'Bot ID — MongoDB ObjectId',
   },
-};
+}
 
 const dealIdRequired = {
   dealId: {
-    type: "string" as const,
-    description: "Deal ID (MongoDB ObjectId)",
+    type: 'string' as const,
+    description: 'Deal ID — MongoDB ObjectId',
   },
-};
+}
+
+export const backtestPayloadParam = {
+  payload: {
+    type: 'object' as const,
+    required: ['data'],
+    properties: {
+      data: {
+        type: 'object' as const,
+        required: ['exchange', 'exchangeUUID', 'settings'],
+        properties: {
+          exchange: {
+            type: 'string' as const,
+            description:
+              'Exchange code string, e.g. "binance", "okxLinear". Use get_supported_exchanges to list all codes, or get_user_exchanges to see your connected accounts.',
+          },
+          exchangeUUID: {
+            type: 'string' as const,
+            description:
+              'Exchange connection UUID. Use get_user_exchanges to retrieve.',
+          },
+          settings: {
+            type: 'object' as const,
+            description:
+              'Inner bot settings object. Use get_discovery_bot(botType) to learn valid fields, or call build_backtest_payload_template(botType) for a prefilled scaffold.',
+          },
+          from: {
+            type: 'number' as const,
+            description:
+              'Range start as Unix millisecond timestamp. Optional for validate.',
+          },
+          to: {
+            type: 'number' as const,
+            description:
+              'Range end as Unix millisecond timestamp. Optional for validate.',
+          },
+          interval: {
+            type: 'string' as const,
+            enum: ['1m', '5m', '15m', '1h', '4h', '1d'],
+            description: 'Candle interval. Optional, default: 1h.',
+          },
+        },
+        description: 'Backtest data wrapper.',
+      },
+    },
+    description:
+      'Backtest request wrapper. Required nesting: payload.data.exchange (string), payload.data.exchangeUUID (UUID string), payload.data.settings (inner bot settings object). Optional: from, to (Unix ms timestamps), interval (default: 1h).',
+  },
+}
+
+// ── Agent workflow resource ─────────────────────────────────────────────────
+
+export const WORKFLOW_RESOURCE_URI = 'gainium://workflow'
+export const WORKFLOW_RESOURCE_TEXT = `
+Gainium MCP — canonical agent workflow
+=======================================
+
+## Layer model
+Discovery outputs describe the INNER settings object.
+Each operation has a different OUTER envelope:
+
+  Layer 1 — discovery:           get_discovery_bot(botType) → { sections: [{ fields: [...] }] }
+  Layer 2 — bot create/update:   { exchangeUUID, pair, ...settingsFields (flat) }
+  Layer 3 — backtest body:       { payload: { data: { exchange, exchangeUUID, settings: <Layer 1 fields>, from, to, interval } } }
+
+## Recommended flows
+
+### Backtest a strategy
+1. get_user_exchanges                     → pick exchangeUUID + exchange id
+2. get_discovery_bot_sections(botType)    → discover available settings sections
+3. get_discovery_bot(botType, section)    → learn field names and defaults
+4. build_backtest_payload_template(botType) → get a ready-to-fill scaffold
+5. validate_backtest_payload              → confirm payload before spending credits
+6. estimate_backtest_cost                 → check credit cost
+7. request_backtest_sync                  → run backtest and get result
+   (or request_backtest + get_backtest_request for async polling)
+
+### DECISION RULE — stop bot vs close individual deals
+DO NOT close deals one by one when the goal is to stop a bot.
+USE stop_bot with the correct closeType for the bot's type instead:
+  - "close bot by market" / "stop and sell" / "close all positions" → stop_bot(botId, botType, closeType="closeByMarket")
+  - "pause bot" / "stop new deals" / "stop without closing"        → stop_bot(botId, botType, closeType="leave")
+  - grid bot close                                                   → stop_bot(botId, botType="grid", closeGridType="closeByMarket")
+stop_bot with closeType="closeByMarket" closes ALL active deals AND stops the bot in ONE call.
+close_deal is ONLY for closing a single specific deal while leaving the bot running.
+
+### Create and manage a bot
+1. get_user_exchanges         → pick exchangeUUID
+2. get_discovery_bot(botType) → learn valid settings fields and defaults
+3. create_dca_bot / create_combo_bot / create_grid_bot
+   - Pass common fields as top-level params (name, strategy, baseOrderSize, tpPerc, etc.)
+   - Pass ANY additional discovery field (startOrderType, useDca, useSl, moveSL, moveSLTrigger,
+     moveSLValue, useMoveTP, dcaOrdersMultiplier, indicators, timers, etc.) in the 'settings'
+     object — it is merged flat into the body at creation time. No create→update two-step needed.
+4. start_bot; to STOP a bot use stop_bot — see DECISION RULE above.
+
+### Inspect deals
+1. get_dca_deals / get_combo_deals / get_terminal_deals
+   - pass botId = MongoDB _id from get_dca_bots (NOT the exchangeUUID) to filter by bot
+   - returns dealId for each deal
+2. get_dca_deal / get_combo_deal / get_terminal_deal      → full detail
+3. close_deal — use ONLY to close a single specific deal while the bot keeps running.
+   DO NOT use close_deal in a loop to stop a bot — use stop_bot(closeType="closeByMarket") instead.
+4. update_dca_deal / update_combo_deal — pass dealId + settings object with only changed fields
+
+## Terminology
+- exchange     = exchange code string, e.g. "binance", "okxLinear"
+- exchangeUUID = UUID from get_user_exchanges; required for all write operations
+- pair         = always {base}_{quote} with underscore, e.g. "BTC_USDT" (NOT exchange-native "BTCUSDT").
+               DCA/Combo accept an array: ["BTC_USDT"]. Grid accepts a single string: "BTC_USDT".
+               Server normalizes to exchange-native format internally — always use underscore format in MCP tools.
+- settings     = inner bot config object (from discovery)
+- payload      = outer backtest envelope: { data: { exchange, exchangeUUID, settings, from?, to?, interval? } }
+- boolean gates = most features require a boolean toggle to be enabled alongside value fields, otherwise values are silently ignored.
+               Examples: useDca:true (gates ordersCount/orderSize/step/volumeScale/stepScale/dcaCondition),
+               useTp:true (gates tpPerc/trailingTp/trailingTpPerc/useMultiTp/multiTp/useMinTP/minTp),
+               useSl:true (gates slPerc/trailingSl/useMultiSl/multiSl),
+               moveSL:true (gates moveSLTrigger/moveSLValue/moveSLForAll),
+               closeByTimer:true (gates closeByTimerValue/closeByTimerUnits).
+               Always set the gate when changing feature values.
+`.trim()
 
 // ── Tool Definitions ────────────────────────────────────────────────────────
 
-const tools: Tool[] = [
+export const tools: Tool[] = [
   // ─── BOT LISTING ────────────────────────────────────────────────────────
 
   {
-    name: "get_dca_bots",
+    name: 'get_dca_bots',
     description:
-      "List DCA (Dollar Cost Averaging) bots. Supports field selection presets: minimal (~85% smaller), standard (default), extended, full. Supports filtering by status and paper/real trading context.",
+      'List DCA (Dollar Cost Averaging) bots. Supports field selection presets: minimal (~85% smaller), standard (default), extended, full. Supports filtering by status and paper/real trading context.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...fieldsParam,
         ...pageParam,
@@ -520,11 +825,11 @@ const tools: Tool[] = [
     },
   },
   {
-    name: "get_combo_bots",
+    name: 'get_combo_bots',
     description:
-      "List Combo (Long/Short with grid-level) bots. Supports field selection presets: minimal, standard (default), extended, full.",
+      'List Combo (Long/Short with grid-level) bots. Supports field selection presets: minimal, standard (default), extended, full.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...fieldsParam,
         ...pageParam,
@@ -534,904 +839,1120 @@ const tools: Tool[] = [
     },
   },
   {
-    name: "get_grid_bots",
+    name: 'get_grid_bots',
     description:
-      "List Grid bots. Supports field selection presets: minimal, standard (default), extended, full.",
+      'List Grid bots. Supports field selection presets: minimal, standard (default), extended, full.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...fieldsParam,
         ...pageParam,
         ...botStatusParam,
         ...paperContextParam,
       },
+    },
+  },
+
+  // ─── BOT DETAILS ───────────────────────────────────────────────────────
+
+  {
+    name: 'get_dca_bot',
+    description:
+      'Get a single DCA bot by its MongoDB ObjectId or UUID. Supports the same field selection presets as get_dca_bots.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...botIdRequired,
+        ...fieldsParam,
+        ...paperContextParam,
+      },
+      required: ['botId'],
+    },
+  },
+
+  {
+    name: 'get_combo_bot',
+    description:
+      'Get a single Combo bot by its MongoDB ObjectId or UUID. Supports the same field selection presets as get_combo_bots.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...botIdRequired,
+        ...fieldsParam,
+        ...paperContextParam,
+      },
+      required: ['botId'],
+    },
+  },
+
+  {
+    name: 'get_grid_bot',
+    description:
+      'Get a single Grid bot by its MongoDB ObjectId or UUID. Supports the same field selection presets as get_grid_bots.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...botIdRequired,
+        ...fieldsParam,
+        ...paperContextParam,
+      },
+      required: ['botId'],
     },
   },
 
   // ─── BOT CREATION ──────────────────────────────────────────────────────
 
   {
-    name: "create_dca_bot",
+    name: 'create_dca_bot',
     description:
-      "Create a new DCA bot. Requires write API key permission. The 'futures' and 'coinm' fields are auto-detected from the exchange — do not provide them.",
+      'Create a new DCA bot in a single step — no follow-up update needed. ' +
+      'The top-level properties cover the most common fields. For any field from get_discovery_bot that is NOT listed here (e.g. startOrderType, useMoveTP, moveTPTrigger, moveTPValue, stopLossTimeout, takeProfitTimeout, dcaOrdersMultiplier, dcaStepMultiplier, trailingTP, trailingTPPerc, indicators, timers, and any other discovery field), ' +
+      "pass them inside the 'settings' object — it is transparently merged into the request body at creation time. This avoids a create→update two-step. " +
+      "Use get_discovery_bot(botType: 'dca') to discover all available fields and defaults. " +
+      "The 'futures' and 'coinm' fields are auto-detected from the exchange — do not provide them. Requires write API key permission.",
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         exchangeUUID: {
-          type: "string",
-          description: "UUID of the exchange connection to use",
+          type: 'string',
+          description: 'UUID of the exchange connection to use',
         },
         ...paperContextParam,
         pair: {
-          type: "array",
-          items: { type: "string" },
+          type: 'array',
+          items: { type: 'string' },
           description:
             'Trading pairs in {base}_{quote} format, e.g. ["BTC_USDT"]',
         },
-        name: { type: "string", description: "Bot name" },
+        name: { type: 'string', description: 'Bot name' },
         strategy: {
-          type: "string",
-          enum: ["LONG", "SHORT"],
-          description: "Trading direction. Default: LONG",
+          type: 'string',
+          enum: ['LONG', 'SHORT'],
+          description: 'Trading direction. Default: LONG',
         },
         baseOrderSize: {
-          type: "string",
+          type: 'string',
           description: 'Size of the initial base order, e.g. "100"',
         },
         orderSize: {
-          type: "string",
+          type: 'string',
           description: 'Size of each DCA order, e.g. "100"',
         },
         orderSizeType: {
-          type: "string",
-          enum: ["base", "quote", "percFree", "percTotal", "usd"],
-          description: "Order size reference currency. Default: quote",
+          type: 'string',
+          enum: ['base', 'quote', 'percFree', 'percTotal', 'usd'],
+          description: 'Order size reference currency. Default: quote',
         },
         tpPerc: {
-          type: "string",
+          type: 'string',
           description: 'Take profit percentage, e.g. "1.5"',
         },
         slPerc: {
-          type: "string",
+          type: 'string',
           description: 'Stop loss percentage, e.g. "-10"',
         },
         step: {
-          type: "string",
+          type: 'string',
           description: 'Price deviation % for next DCA order, e.g. "1.5"',
         },
         ordersCount: {
-          type: "integer",
-          description: "Maximum number of DCA orders",
+          type: 'integer',
+          description: 'Maximum number of DCA orders',
         },
         maxNumberOfOpenDeals: {
-          type: "string",
+          type: 'string',
           description: 'Maximum concurrent open deals, e.g. "1"',
         },
         startCondition: {
-          type: "string",
+          type: 'string',
           enum: [
-            "ASAP",
-            "Manual",
-            "TradingviewSignals",
-            "Timer",
-            "TechnicalIndicators",
+            'ASAP',
+            'Manual',
+            'TradingviewSignals',
+            'Timer',
+            'TechnicalIndicators',
           ],
-          description: "Condition to start a new deal. Default: ASAP",
+          description: 'Condition to start a new deal. Default: ASAP',
+        },
+        useDca: {
+          type: 'boolean',
+          description:
+            'Enable DCA orders. Set false for a single base-order bot.',
+        },
+        useSl: {
+          type: 'boolean',
+          description: 'Enable stop-loss. When true, slPerc is used.',
+        },
+        moveSL: {
+          type: 'boolean',
+          description:
+            'Enable trailing stop-loss (move SL as price moves in your favour).',
+        },
+        moveSLTrigger: {
+          type: 'string',
+          description: 'Profit % at which trailing SL is activated, e.g. "1.0"',
+        },
+        moveSLValue: {
+          type: 'string',
+          description: 'Trail distance % for the moving SL, e.g. "0.5"',
+        },
+        startOrderType: {
+          type: 'string',
+          enum: ['market', 'limit'],
+          description: 'Order type for the base (start) order. Default: market',
         },
         settings: {
-          type: "object",
+          type: 'object',
           description:
-            "Additional DCA bot settings (any DCABotSettings fields not listed above). Merged into the request body.",
+            'Transparent passthrough for any DCA settings field from get_discovery_bot that is not listed as a top-level property above (e.g. useMoveTP, moveTPTrigger, moveTPValue, dcaOrdersMultiplier, dcaStepMultiplier, trailingTP, trailingTPPerc, stopLossTimeout, takeProfitTimeout, indicators, timers, and more). All keys are merged flat into the request body — use this to create a fully-configured bot in a single call.',
         },
       },
-      required: ["exchangeUUID", "pair"],
+      required: ['exchangeUUID', 'pair'],
     },
   },
   {
-    name: "create_combo_bot",
+    name: 'create_combo_bot',
     description:
-      "Create a new Combo bot (DCA + grid levels). Requires write API key permission.",
+      "Create a new Combo bot (DCA + grid levels) in a single step. Common fields are listed as top-level properties. For any field from get_discovery_bot not listed here, pass them inside 'settings' — it is transparently merged into the request body so no follow-up update is needed. Use get_discovery_bot(botType: 'combo') to discover all available fields. Requires write API key permission.",
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         exchangeUUID: {
-          type: "string",
-          description: "UUID of the exchange connection",
+          type: 'string',
+          description: 'UUID of the exchange connection',
         },
         ...paperContextParam,
         pair: {
-          type: "array",
-          items: { type: "string" },
+          type: 'array',
+          items: { type: 'string' },
           description: 'Trading pairs, e.g. ["BTC_USDT"]',
         },
-        name: { type: "string", description: "Bot name" },
+        name: { type: 'string', description: 'Bot name' },
         strategy: {
-          type: "string",
-          enum: ["LONG", "SHORT"],
-          description: "Trading direction",
+          type: 'string',
+          enum: ['LONG', 'SHORT'],
+          description: 'Trading direction',
         },
-        baseOrderSize: { type: "string", description: "Base order size" },
-        orderSize: { type: "string", description: "DCA order size" },
+        baseOrderSize: { type: 'string', description: 'Base order size' },
+        orderSize: { type: 'string', description: 'DCA order size' },
         gridLevel: {
-          type: "string",
+          type: 'string',
           description: 'Number of grid levels, e.g. "5"',
         },
-        step: { type: "string", description: "Step % between DCA orders" },
-        ordersCount: { type: "integer", description: "DCA orders count" },
+        step: { type: 'string', description: 'Step % between DCA orders' },
+        ordersCount: { type: 'integer', description: 'DCA orders count' },
         settings: {
-          type: "object",
+          type: 'object',
           description:
-            "Additional Combo bot settings (ComboBotSettings fields). Merged into the request body.",
+            'Transparent passthrough for any Combo settings field from get_discovery_bot not listed above. All keys are merged flat into the request body — use this to create a fully-configured bot in a single call.',
         },
       },
-      required: ["exchangeUUID", "pair"],
+      required: ['exchangeUUID', 'pair'],
     },
   },
   {
-    name: "create_grid_bot",
+    name: 'create_grid_bot',
     description:
-      "Create a new Grid bot that buys/sells within a price range. Requires write API key permission.",
+      "Create a new Grid bot that buys/sells within a price range, in a single step. Common fields are listed as top-level properties. For any field from get_discovery_bot not listed here, pass them inside 'settings' — it is transparently merged into the request body so no follow-up update is needed. Use get_discovery_bot(botType: 'grid') to discover all available fields. Requires write API key permission.",
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         exchangeUUID: {
-          type: "string",
-          description: "UUID of the exchange connection",
+          type: 'string',
+          description: 'UUID of the exchange connection',
         },
         ...paperContextParam,
         pair: {
-          type: "string",
-          description:
-            'Trading pair in {base}_{quote} format, e.g. "BTC_USDT"',
+          type: 'string',
+          description: 'Trading pair in {base}_{quote} format, e.g. "BTC_USDT"',
         },
-        topPrice: { type: "number", description: "Top price of grid range" },
+        topPrice: { type: 'number', description: 'Top price of grid range' },
         lowPrice: {
-          type: "number",
-          description: "Bottom price of grid range",
+          type: 'number',
+          description: 'Bottom price of grid range',
         },
         budget: {
-          type: "number",
-          description: "Total budget allocated to bot",
+          type: 'number',
+          description: 'Total budget allocated to bot',
         },
-        levels: { type: "number", description: "Number of grid levels" },
-        name: { type: "string", description: "Bot name" },
+        levels: { type: 'number', description: 'Number of grid levels' },
+        name: { type: 'string', description: 'Bot name' },
         gridType: {
-          type: "string",
+          type: 'string',
           description: 'Grid type: "arithmetic" or "geometric"',
         },
         settings: {
-          type: "object",
+          type: 'object',
           description:
-            "Additional Grid bot settings (BotSettings fields). Merged into the request body.",
+            'Transparent passthrough for any Grid settings field from get_discovery_bot not listed above. All keys are merged flat into the request body — use this to create a fully-configured bot in a single call.',
         },
       },
-      required: ["exchangeUUID", "pair", "topPrice", "lowPrice", "budget"],
+      required: ['exchangeUUID', 'pair', 'topPrice', 'lowPrice', 'budget'],
     },
   },
 
   // ─── BOT UPDATE ─────────────────────────────────────────────────────────
 
   {
-    name: "update_dca_bot",
+    name: 'update_dca_bot',
     description:
-      "Update an existing DCA bot's settings. Only include fields you want to change. Requires write API key permission.",
+      "Update an existing DCA bot's settings. Pass only the fields you want to change inside the 'settings' object — other fields are left untouched. " +
+      'IMPORTANT: Most features are gated by a boolean toggle — you MUST include the toggle alongside the value fields or they will be silently ignored. ' +
+      'Key toggles: useDca (enables DCA orders — required for ordersCount/orderSize/step to apply), ' +
+      'useTp (enables take-profit — required for tpPerc), ' +
+      'useSl (enables stop-loss — required for slPerc), ' +
+      'moveSL (enables trailing SL — required for moveSLTrigger/moveSLValue), ' +
+      'useMoveTP (enables trailing TP — required for moveTPTrigger/moveTPValue). ' +
+      "Use get_discovery_bot(botType: 'dca') to discover all available field names. Requires write API key permission.",
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         ...paperContextParam,
         settings: {
-          type: "object",
+          type: 'object',
           minProperties: 1,
           description:
-            "Settings to update: name, pair, step, ordersCount, tpPerc, slPerc, orderSize, baseOrderSize, orderSizeType, startCondition, maxNumberOfOpenDeals, useTp, useSl, useDca, volumeScale, stepScale, etc.",
+            'Settings to update. Always include the boolean gate when changing feature values: ' +
+            'useDca+ordersCount/orderSize/step, useTp+tpPerc/trailingTp/trailingTpPerc/useMultiTp/multiTp, useSl+slPerc/trailingSl/useMultiSl/multiSl, moveSL+moveSLTrigger/moveSLValue/moveSLForAll, closeByTimer+closeByTimerValue/closeByTimerUnits. ' +
+            'Other fields: name, pair, baseOrderSize, orderSizeType, startCondition, maxNumberOfOpenDeals, etc.',
         },
       },
-      required: ["botId", "settings"],
+      required: ['botId', 'settings'],
     },
   },
   {
-    name: "update_combo_bot",
+    name: 'update_combo_bot',
     description:
-      "Update an existing Combo bot's settings. Requires write API key permission.",
+      "Update an existing Combo bot's settings. Pass only the fields you want to change inside the 'settings' object — other fields are left untouched. " +
+      'IMPORTANT: Most features are gated by a boolean toggle — always include the toggle alongside value fields or they will be silently ignored. ' +
+      'Key toggles: useDca (gates ordersCount/orderSize/step), useTp (gates tpPerc/trailingTp/useMultiTp/multiTp), useSl (gates slPerc/trailingSl/useMultiSl/multiSl). ' +
+      "Use get_discovery_bot(botType: 'combo') to discover all available field names. Requires write API key permission.",
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         ...paperContextParam,
         settings: {
-          type: "object",
+          type: 'object',
           minProperties: 1,
           description:
-            "Settings to update: name, step, ordersCount, tpPerc, slPerc, orderSize, baseOrderSize, gridLevel, baseStep, baseGridLevels, comboTpBase, etc.",
+            'Settings to update. Always include the boolean gate when changing feature values: ' +
+            'useDca+ordersCount/orderSize/step, useTp+tpPerc, useSl+slPerc. ' +
+            'Other fields: name, baseOrderSize, gridLevel, baseStep, baseGridLevels, comboTpBase, etc.',
         },
       },
-      required: ["botId", "settings"],
+      required: ['botId', 'settings'],
     },
   },
 
   // ─── BOT CLONE ──────────────────────────────────────────────────────────
 
   {
-    name: "clone_dca_bot",
+    name: 'clone_dca_bot',
     description:
-      "Clone a DCA bot, optionally overriding settings. Requires write API key permission.",
+      'Clone a DCA bot, optionally overriding settings. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         ...paperContextParam,
         overrides: {
-          type: "object",
+          type: 'object',
           description:
-            "Settings to override in the cloned bot (UpdateDCABotInput fields)",
+            'Settings to override in the cloned bot (UpdateDCABotInput fields)',
         },
       },
-      required: ["botId"],
+      required: ['botId'],
     },
   },
   {
-    name: "clone_combo_bot",
+    name: 'clone_combo_bot',
     description:
-      "Clone a Combo bot, optionally overriding settings. Requires write API key permission.",
+      'Clone a Combo bot, optionally overriding settings. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         ...paperContextParam,
         overrides: {
-          type: "object",
+          type: 'object',
           description:
-            "Settings to override in the cloned bot (UpdateComboBotInput fields, plus pair array)",
+            'Settings to override in the cloned bot (UpdateComboBotInput fields, plus pair array)',
         },
       },
-      required: ["botId"],
+      required: ['botId'],
     },
   },
   {
-    name: "clone_grid_bot",
+    name: 'clone_grid_bot',
     description:
-      "Clone a Grid bot, optionally overriding settings. Requires write API key permission.",
+      'Clone a Grid bot, optionally overriding settings. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         ...paperContextParam,
         overrides: {
-          type: "object",
+          type: 'object',
           description:
-            "Settings to override in the cloned bot (CreateGridBotInput fields)",
+            'Settings to override in the cloned bot (CreateGridBotInput fields)',
         },
       },
-      required: ["botId"],
+      required: ['botId'],
     },
   },
 
   // ─── BOT LIFECYCLE ──────────────────────────────────────────────────────
 
   {
-    name: "start_bot",
+    name: 'start_bot',
     description:
-      "Start a stopped or paused bot. Requires write API key permission.",
+      'Start a stopped or paused bot. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
         },
         ...paperContextParam,
       },
-      required: ["botId", "botType"],
+      required: ['botId', 'botType'],
     },
   },
   {
-    name: "stop_bot",
-    description: "Stop an active bot. Requires write API key permission.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        ...botIdRequired,
-        botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type",
-        },
-        ...paperContextParam,
-      },
-      required: ["botId", "botType"],
-    },
-  },
-  {
-    name: "archive_bot",
+    name: 'stop_bot',
     description:
-      "Archive a bot (soft delete). Can be restored later. Requires write API key permission.",
+      'Stop an active bot. ' +
+      'closeType is REQUIRED — always include it: ' +
+      '"close bot by market" / "close and stop" / "stop and sell" → closeType="closeByMarket". ' +
+      '"pause bot" / "stop bot" / "stop new deals only" → closeType="leave" (deals stay open). ' +
+      '"cancel orders" → closeType="cancel". ' +
+      'Example close-by-market: { "botId": "<id>", "botType": "dca", "closeType": "closeByMarket" }. ' +
+      'Example pause only: { "botId": "<id>", "botType": "dca", "closeType": "leave" }. ' +
+      'For Grid bots: use closeGridType (required) instead of closeType. ' +
+      'Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
+        },
+        closeType: {
+          type: 'string',
+          enum: ['leave', 'closeByMarket', 'closeByLimit', 'cancel'],
+          description:
+            'REQUIRED for dca/combo. How to handle active deals when stopping. ' +
+            '"leave" = keep active deals running (bot stops creating new deals only). ' +
+            '"closeByMarket" = close all active deals immediately at market price. ' +
+            '"closeByLimit" = place limit close orders. ' +
+            '"cancel" = cancel open orders without executing a close trade.',
+        },
+        closeGridType: {
+          type: 'string',
+          enum: ['cancel', 'closeByMarket', 'closeByLimit'],
+          description:
+            'REQUIRED for grid bots. How to handle the grid when stopping. ' +
+            '"cancel" = cancel all grid orders. ' +
+            '"closeByMarket" = close position at market price. ' +
+            '"closeByLimit" = close position with limit orders.',
+        },
+        cancelPartiallyFilled: {
+          type: 'boolean',
+          description: 'Cancel partially filled orders. Default: false.',
         },
         ...paperContextParam,
       },
-      required: ["botId", "botType"],
+      required: ['botId', 'botType', 'closeType'],
     },
   },
   {
-    name: "restore_bot",
+    name: 'archive_bot',
     description:
-      "Restore an archived bot. Requires write API key permission.",
+      'Archive a bot (soft delete). Can be restored later. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
         },
         ...paperContextParam,
       },
-      required: ["botId", "botType"],
+      required: ['botId', 'botType'],
     },
   },
   {
-    name: "change_bot_pairs",
+    name: 'restore_bot',
+    description: 'Restore an archived bot. Requires write API key permission.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...botIdRequired,
+        botType: {
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
+        },
+        ...paperContextParam,
+      },
+      required: ['botId', 'botType'],
+    },
+  },
+  {
+    name: 'change_bot_pairs',
     description:
       'Change trading pairs for a DCA bot. Pairs format: {base}_{quote} (e.g. "BTC_USDT"). Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         pair: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            'List of trading pairs, e.g. ["BTC_USDT", "ETH_USDT"]',
+          type: 'array',
+          items: { type: 'string' },
+          description: 'List of trading pairs, e.g. ["BTC_USDT", "ETH_USDT"]',
         },
         ...paperContextParam,
       },
-      required: ["botId", "pair"],
+      required: ['botId', 'pair'],
     },
   },
 
   // ─── DEALS LISTING ──────────────────────────────────────────────────────
 
   {
-    name: "get_dca_deals",
+    name: 'get_dca_deals',
     description:
-      "List DCA deals with filtering and field selection. Presets: minimal, standard (default), extended, full.",
+      'List DCA deals with filtering and field selection. Presets: minimal, standard (default), extended, full. ' +
+      'To get deals for a specific bot, pass its MongoDB ObjectId as botId (the _id field from get_dca_bots, NOT the exchangeUUID). ' +
+      'To update a deal, first get its dealId from this listing, then call update_dca_deal.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...fieldsParam,
         ...pageParam,
         ...dealStatusParam,
         botId: {
-          type: "string",
-          description: "Filter by parent bot UUID",
+          type: 'string',
+          description:
+            'Filter by parent bot MongoDB ObjectId (_id from get_dca_bots). NOT the exchangeUUID.',
         },
         ...paperContextParam,
       },
     },
   },
   {
-    name: "get_combo_deals",
+    name: 'get_combo_deals',
     description:
-      "List Combo deals with filtering and field selection. Presets: minimal, standard (default), extended, full.",
+      'List Combo deals with filtering and field selection. Presets: minimal, standard (default), extended, full. ' +
+      'To get deals for a specific bot, pass its MongoDB ObjectId as botId (the _id field from get_combo_bots, NOT the exchangeUUID). ' +
+      'To update a deal, first get its dealId from this listing, then call update_combo_deal.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...fieldsParam,
         ...pageParam,
         ...dealStatusParam,
         botId: {
-          type: "string",
-          description: "Filter by parent bot UUID",
+          type: 'string',
+          description:
+            'Filter by parent bot MongoDB ObjectId (_id from get_combo_bots). NOT the exchangeUUID.',
         },
         ...paperContextParam,
       },
     },
   },
   {
-    name: "get_terminal_deals",
+    name: 'get_terminal_deals',
     description:
-      "List Terminal deals (one-time trades) with filtering and field selection. Presets: minimal, standard (default), extended, full.",
+      'List Terminal deals (one-time trades) with filtering and field selection. Presets: minimal, standard (default), extended, full. ' +
+      'To get deals for a specific bot, pass its MongoDB ObjectId as botId (_id from the bot listing, NOT the exchangeUUID).',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...fieldsParam,
         ...pageParam,
         ...dealStatusParam,
         botId: {
-          type: "string",
-          description: "Filter by bot ID",
+          type: 'string',
+          description:
+            'Filter by parent bot MongoDB ObjectId (_id from bot listing). NOT the exchangeUUID.',
         },
         ...paperContextParam,
       },
+    },
+  },
+
+  // ─── DEAL DETAILS ────────────────────────────────────────────────────────
+
+  {
+    name: 'get_dca_deal',
+    description:
+      'Get a single DCA deal by its MongoDB ObjectId or UUID. Supports the same field selection presets as get_dca_deals.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...dealIdRequired,
+        ...fieldsParam,
+        ...paperContextParam,
+      },
+      required: ['dealId'],
+    },
+  },
+
+  {
+    name: 'get_combo_deal',
+    description:
+      'Get a single Combo deal by its MongoDB ObjectId or UUID. Supports the same field selection presets as get_combo_deals.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...dealIdRequired,
+        ...fieldsParam,
+        ...paperContextParam,
+      },
+      required: ['dealId'],
+    },
+  },
+
+  {
+    name: 'get_terminal_deal',
+    description:
+      'Get a single Terminal deal by its MongoDB ObjectId or UUID. Supports the same field selection presets as get_terminal_deals.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...dealIdRequired,
+        ...fieldsParam,
+        ...paperContextParam,
+      },
+      required: ['dealId'],
     },
   },
 
   // ─── DEAL CREATION & MANAGEMENT ─────────────────────────────────────────
 
   {
-    name: "create_terminal_deal",
+    name: 'create_terminal_deal',
     description:
-      "Create a one-time Terminal Deal for immediate execution. Unlike bots, it executes once and closes. Requires write API key permission.",
+      'Create a one-time Terminal Deal for immediate execution. Unlike bots, it executes once and closes. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         exchangeUUID: {
-          type: "string",
-          description: "UUID of the exchange connection",
+          type: 'string',
+          description: 'UUID of the exchange connection',
         },
         ...paperContextParam,
         pair: {
-          type: "array",
-          items: { type: "string" },
+          type: 'array',
+          items: { type: 'string' },
           description: 'Trading pairs, e.g. ["BTC_USDT"]',
         },
         terminalDealType: {
-          type: "string",
-          enum: ["simple", "smart", "import"],
-          description: "Terminal deal type",
+          type: 'string',
+          enum: ['simple', 'smart', 'import'],
+          description: 'Terminal deal type',
         },
         strategy: {
-          type: "string",
-          enum: ["LONG", "SHORT"],
-          description: "Trading direction",
+          type: 'string',
+          enum: ['LONG', 'SHORT'],
+          description: 'Trading direction',
         },
-        baseOrderSize: { type: "string", description: "Base order size" },
-        orderSize: { type: "string", description: "DCA order size" },
-        tpPerc: { type: "string", description: "Take profit %" },
-        slPerc: { type: "string", description: "Stop loss %" },
+        baseOrderSize: { type: 'string', description: 'Base order size' },
+        orderSize: { type: 'string', description: 'DCA order size' },
+        tpPerc: { type: 'string', description: 'Take profit %' },
+        slPerc: { type: 'string', description: 'Stop loss %' },
         settings: {
-          type: "object",
+          type: 'object',
           description:
-            "Additional terminal deal settings (DCABotSettings fields). Merged into the request body.",
+            'Additional terminal deal settings (DCABotSettings fields). Merged into the request body.',
         },
       },
-      required: ["exchangeUUID", "terminalDealType"],
+      required: ['exchangeUUID', 'terminalDealType'],
     },
   },
   {
-    name: "update_dca_deal",
+    name: 'update_dca_deal',
     description:
-      "Update settings of an active DCA deal. Requires write API key permission.",
+      'Update settings of an active DCA deal. ' +
+      "Get the dealId from get_dca_deals (filter by botId = bot's MongoDB _id). " +
+      'IMPORTANT: Most features are gated by a boolean toggle — always include it alongside the value fields or they will be silently ignored. ' +
+      'Key toggles: useDca (gates ordersCount/orderSize/step to apply), ' +
+      'useTp (gates tpPerc/trailingTp/trailingTpPerc/useMultiTp/multiTp), ' +
+      'useSl (gates slPerc/trailingSl/useMultiSl/multiSl), ' +
+      'moveSL (gates moveSLTrigger/moveSLValue/moveSLForAll), ' +
+      'closeByTimer (gates closeByTimerValue/closeByTimerUnits). ' +
+      'Example — enable DCA with 1 order of 200 USDT: { "dealId": "<id>", "settings": { "useDca": true, "ordersCount": 1, "orderSize": "200" } }. ' +
+      'Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...dealIdRequired,
         ...paperContextParam,
         settings: {
-          type: "object",
+          type: 'object',
           minProperties: 1,
           description:
-            "Deal settings to update: ordersCount, step, tpPerc, slPerc, orderSize, useTp, useSl, useDca, activeOrdersCount, volumeScale, stepScale, useMultiTp, multiTp, useMultiSl, multiSl, trailingTp, trailingSl, moveSL, closeByTimer, dcaCondition, dcaCustom, etc.",
+            'Deal settings to update. Always include the boolean gate when changing feature values: ' +
+            'useDca+ordersCount/orderSize/step, useTp+tpPerc/trailingTp/trailingTpPerc/useMultiTp/multiTp, useSl+slPerc/trailingSl/useMultiSl/multiSl, moveSL+moveSLTrigger/moveSLValue/moveSLForAll, closeByTimer+closeByTimerValue/closeByTimerUnits. ' +
+            'Other fields: activeOrdersCount, volumeScale, stepScale, dcaCondition, dcaCustom, etc.',
         },
       },
-      required: ["dealId", "settings"],
+      required: ['dealId', 'settings'],
     },
   },
   {
-    name: "update_combo_deal",
+    name: 'update_combo_deal',
     description:
-      "Update settings of an active Combo deal. Requires write API key permission.",
+      'Update settings of an active Combo deal. ' +
+      "Get the dealId from get_combo_deals (filter by botId = bot's MongoDB _id). " +
+      'IMPORTANT: Most features are gated by a boolean toggle — always include it alongside the value fields or they will be silently ignored. ' +
+      'Key toggles: useDca (gates ordersCount/step), useTp (gates tpPerc/trailingTp/useMultiTp/multiTp), useSl (gates slPerc/trailingSl/useMultiSl/multiSl). ' +
+      'Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...dealIdRequired,
         ...paperContextParam,
         settings: {
-          type: "object",
+          type: 'object',
           minProperties: 1,
           description:
-            "Deal settings to update: ordersCount, step, tpPerc, slPerc, useTp, useSl, useDca, activeOrdersCount, volumeScale, stepScale, comboTpBase, etc.",
+            'Deal settings to update. Always include the boolean gate when changing feature values: ' +
+            'useDca+ordersCount/step, useTp+tpPerc/trailingTp/useMultiTp/multiTp, useSl+slPerc/trailingSl/useMultiSl/multiSl. ' +
+            'Other fields: activeOrdersCount, volumeScale, stepScale, comboTpBase, etc.',
         },
       },
-      required: ["dealId", "settings"],
+      required: ['dealId', 'settings'],
     },
   },
   {
-    name: "update_terminal_deal",
+    name: 'update_terminal_deal',
     description:
-      "Update settings of an active Terminal deal. Requires write API key permission.",
+      'Update settings of an active Terminal deal. ' +
+      'IMPORTANT: Most features are gated by a boolean toggle — always include it alongside the value fields or they will be silently ignored. ' +
+      'Key toggles: useTp (gates tpPerc/trailingTp/useMultiTp/multiTp), useSl (gates slPerc/trailingSl/useMultiSl/multiSl), useDca (gates ordersCount/step). ' +
+      'Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...dealIdRequired,
         ...paperContextParam,
         settings: {
-          type: "object",
+          type: 'object',
           minProperties: 1,
           description:
-            "Deal settings to update: ordersCount, step, tpPerc, slPerc, useTp, useSl, useDca, activeOrdersCount, etc.",
+            'Deal settings to update. Always include the boolean gate when changing feature values: ' +
+            'useDca+ordersCount/step, useTp+tpPerc/trailingTp/useMultiTp/multiTp, useSl+slPerc/trailingSl/useMultiSl/multiSl. Other fields: activeOrdersCount, etc.',
         },
       },
-      required: ["dealId", "settings"],
+      required: ['dealId', 'settings'],
     },
   },
   {
-    name: "start_deal",
+    name: 'start_deal',
     description:
-      "Start a new deal from a bot. Requires write API key permission.",
+      'Start a new deal from a bot. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...botIdRequired,
         botType: {
-          type: "string",
-          enum: ["dca", "combo"],
-          description: "Bot type (dca or combo)",
+          type: 'string',
+          enum: ['dca', 'combo'],
+          description: 'Bot type (dca or combo)',
         },
         symbol: {
-          type: "string",
+          type: 'string',
           description:
             'Symbol for multi-coin bots. Format: {base}_{quote}, e.g. "BTC_USDT"',
         },
         ...paperContextParam,
       },
-      required: ["botId", "botType"],
+      required: ['botId', 'botType'],
     },
   },
   {
-    name: "close_deal",
+    name: 'close_deal',
     description:
-      "Close an active deal. Requires write API key permission.",
+      'Close a single active deal while leaving the bot running. ' +
+      'WARNING: if your goal is to stop a bot and close all its deals, use stop_bot with closeType="closeByMarket" instead — ' +
+      'do NOT call close_deal in a loop. ' +
+      'close_deal is only for closing one specific deal by dealId. ' +
+      'Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...dealIdRequired,
         dealType: {
-          type: "string",
-          enum: ["dca", "combo", "terminal"],
-          description: "Deal type",
+          type: 'string',
+          enum: ['dca', 'combo', 'terminal'],
+          description: 'Deal type',
         },
         type: {
-          type: "string",
-          enum: ["cancel", "closeByLimit", "closeByMarket", "leave"],
-          description: "Close type. Default: closeByMarket",
+          type: 'string',
+          enum: ['cancel', 'closeByLimit', 'closeByMarket', 'leave'],
+          description: 'Close type. Default: closeByMarket',
         },
         ...paperContextParam,
       },
-      required: ["dealId", "dealType", "type"],
+      required: ['dealId', 'dealType', 'type'],
     },
   },
   {
-    name: "add_funds",
+    name: 'add_funds',
     description:
-      "Add funds to an active DCA deal. Either dealId or botId required. Requires write API key permission.",
+      'Add funds to an active DCA deal. Either dealId or botId required. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         dealId: {
-          type: "string",
-          description: "Deal ID. Either dealId or botId required.",
+          type: 'string',
+          description: 'Deal ID. Either dealId or botId required.',
         },
         botId: {
-          type: "string",
-          description: "Bot ID. Either dealId or botId required.",
+          type: 'string',
+          description: 'Bot ID. Either dealId or botId required.',
         },
-        qty: { type: "string", description: "Amount to add" },
+        qty: { type: 'string', description: 'Amount to add' },
         type: {
-          type: "string",
-          enum: ["fixed", "perc"],
+          type: 'string',
+          enum: ['fixed', 'perc'],
           description: 'Quantity type. Default: "fixed"',
         },
         asset: {
-          type: "string",
-          enum: ["base", "quote"],
-          description: "Asset type (required for fixed type)",
+          type: 'string',
+          enum: ['base', 'quote'],
+          description: 'Asset type (required for fixed type)',
         },
         symbol: {
-          type: "string",
+          type: 'string',
           description: 'Trading symbol, e.g. "BTC_USDT"',
         },
         ...paperContextParam,
       },
-      required: ["qty"],
-      oneOf: [
-        { required: ["dealId"] },
-        { required: ["botId"] },
-      ],
+      required: ['qty'],
+      oneOf: [{ required: ['dealId'] }, { required: ['botId'] }],
     },
   },
   {
-    name: "reduce_funds",
+    name: 'reduce_funds',
     description:
-      "Reduce funds from an active DCA deal. Either dealId or botId required. Requires write API key permission.",
+      'Reduce funds from an active DCA deal. Either dealId or botId required. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         dealId: {
-          type: "string",
-          description: "Deal ID. Either dealId or botId required.",
+          type: 'string',
+          description: 'Deal ID. Either dealId or botId required.',
         },
         botId: {
-          type: "string",
-          description: "Bot ID. Either dealId or botId required.",
+          type: 'string',
+          description: 'Bot ID. Either dealId or botId required.',
         },
-        qty: { type: "string", description: "Amount to reduce" },
+        qty: { type: 'string', description: 'Amount to reduce' },
         type: {
-          type: "string",
-          enum: ["fixed", "perc"],
+          type: 'string',
+          enum: ['fixed', 'perc'],
           description: 'Quantity type. Default: "fixed"',
         },
         asset: {
-          type: "string",
-          enum: ["base", "quote"],
-          description: "Asset type (required for fixed type)",
+          type: 'string',
+          enum: ['base', 'quote'],
+          description: 'Asset type (required for fixed type)',
         },
         symbol: {
-          type: "string",
+          type: 'string',
           description: 'Trading symbol, e.g. "BTC_USDT"',
         },
         ...paperContextParam,
       },
-      required: ["qty"],
-      oneOf: [
-        { required: ["dealId"] },
-        { required: ["botId"] },
-      ],
+      required: ['qty'],
+      oneOf: [{ required: ['dealId'] }, { required: ['botId'] }],
     },
   },
   {
-    name: "add_funds_terminal",
+    name: 'add_funds_terminal',
     description:
-      "Add funds to an active Terminal deal. Requires write API key permission.",
+      'Add funds to an active Terminal deal. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...dealIdRequired,
-        qty: { type: "string", description: "Amount to add" },
+        qty: { type: 'string', description: 'Amount to add' },
         type: {
-          type: "string",
-          enum: ["fixed", "perc"],
+          type: 'string',
+          enum: ['fixed', 'perc'],
           description: 'Quantity type. Default: "fixed"',
         },
         asset: {
-          type: "string",
-          enum: ["base", "quote"],
-          description: "Asset type (required for fixed type)",
+          type: 'string',
+          enum: ['base', 'quote'],
+          description: 'Asset type (required for fixed type)',
         },
         symbol: {
-          type: "string",
+          type: 'string',
           description: 'Trading symbol, e.g. "BTC_USDT"',
         },
       },
-      required: ["dealId", "qty"],
+      required: ['dealId', 'qty'],
     },
   },
   {
-    name: "reduce_funds_terminal",
+    name: 'reduce_funds_terminal',
     description:
-      "Reduce funds from an active Terminal deal. Requires write API key permission.",
+      'Reduce funds from an active Terminal deal. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...dealIdRequired,
-        qty: { type: "string", description: "Amount to reduce" },
+        qty: { type: 'string', description: 'Amount to reduce' },
         type: {
-          type: "string",
-          enum: ["fixed", "perc"],
+          type: 'string',
+          enum: ['fixed', 'perc'],
           description: 'Quantity type. Default: "fixed"',
         },
         asset: {
-          type: "string",
-          enum: ["base", "quote"],
-          description: "Asset type (required for fixed type)",
+          type: 'string',
+          enum: ['base', 'quote'],
+          description: 'Asset type (required for fixed type)',
         },
         symbol: {
-          type: "string",
+          type: 'string',
           description: 'Trading symbol, e.g. "BTC_USDT"',
         },
       },
-      required: ["dealId", "qty"],
+      required: ['dealId', 'qty'],
     },
   },
 
   // ─── BACKTEST ───────────────────────────────────────────────────────────
 
   {
-    name: "estimate_backtest_cost",
+    name: 'estimate_backtest_cost',
     description:
-      "Estimate the credit cost of a server-side backtest before submitting it. Discovery tools describe the inner bot settings object, but this tool expects the full wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. Minimal valid example: { \"botType\": \"dca\", \"paperContext\": false, \"payload\": { \"data\": { \"exchange\": \"binance\", \"exchangeUUID\": \"650e8400-e29b-41d4-a716-446655440001\", \"settings\": { \"name\": \"BTC DCA Strategy\", \"pair\": [\"BTC_USDT\"], \"strategy\": \"LONG\", \"baseOrderSize\": \"100\", \"useDca\": true, \"startCondition\": \"ASAP\" }, \"from\": 1640995200000, \"to\": 1672531199000, \"interval\": \"1h\" } } }. Requires write API key permission.",
+      'Estimate the credit cost of a server-side backtest before submitting it. Discovery tools describe the inner bot settings object, but this tool expects the full wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. DCA minimal example: { "botType": "dca", "paperContext": false, "payload": { "data": { "exchange": "binance", "exchangeUUID": "650e8400-e29b-41d4-a716-446655440001", "settings": { "pair": ["BTC_USDT"], "strategy": "LONG", "baseOrderSize": "100", "useDca": true, "startCondition": "ASAP" }, "from": 1640995200000, "to": 1672531199000, "interval": "1h" } } }. Combo minimal settings: {"pair":["BTC_USDT"],"strategy":"LONG","baseOrderSize":"100","orderSize":"100","gridLevel":"5","step":"1.5"}. Grid minimal settings: {"pair":"BTC_USDT","topPrice":50000,"lowPrice":40000,"budget":1000,"levels":10} (grid pair is a single string, not array). Call build_backtest_payload_template(botType) for a complete ready-to-fill scaffold. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type for the backtest",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type for the backtest',
         },
-        payload: {
-          type: "object",
-          minProperties: 1,
-          description:
-            "Full backtest request wrapper. Expected nesting is payload.data.settings. Required outer shape: { payload: { data: { exchange, exchangeUUID, settings, from, to, interval } } }.",
-        },
+        ...backtestPayloadParam,
         ...paperContextParam,
       },
-      required: ["botType", "payload"],
+      required: ['botType', 'payload'],
     },
   },
   {
-    name: "request_backtest",
+    name: 'request_backtest',
     description:
-      "Submit a server-side backtest request for asynchronous processing. Discovery tools describe the inner bot settings object, but this tool expects the full request wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. Minimal valid example: { \"botType\": \"dca\", \"paperContext\": false, \"payload\": { \"data\": { \"exchange\": \"binance\", \"exchangeUUID\": \"650e8400-e29b-41d4-a716-446655440001\", \"settings\": { \"name\": \"BTC DCA Strategy\", \"pair\": [\"BTC_USDT\"], \"strategy\": \"LONG\", \"baseOrderSize\": \"100\", \"orderSize\": \"100\", \"orderSizeType\": \"quote\", \"startCondition\": \"ASAP\", \"useDca\": true, \"tpPerc\": \"2\" }, \"from\": 1640995200000, \"to\": 1672531199000, \"interval\": \"1h\" } } }. Returns a requestId for tracking. Credits are deducted. Requires write API key permission.",
+      'Submit a server-side backtest request for asynchronous processing. Discovery tools describe the inner bot settings object, but this tool expects the full request wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. DCA minimal example: { "botType": "dca", "paperContext": false, "payload": { "data": { "exchange": "binance", "exchangeUUID": "650e8400-e29b-41d4-a716-446655440001", "settings": { "pair": ["BTC_USDT"], "strategy": "LONG", "baseOrderSize": "100", "orderSize": "100", "orderSizeType": "quote", "startCondition": "ASAP", "useDca": true, "tpPerc": "2" }, "from": 1640995200000, "to": 1672531199000, "interval": "1h" } } }. Combo minimal settings: {"pair":["BTC_USDT"],"strategy":"LONG","baseOrderSize":"100","orderSize":"100","gridLevel":"5","step":"1.5"}. Grid minimal settings: {"pair":"BTC_USDT","topPrice":50000,"lowPrice":40000,"budget":1000,"levels":10} (grid pair is a single string, not array). Call build_backtest_payload_template(botType) for a complete ready-to-fill scaffold. Returns a requestId for tracking. Credits are deducted. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type for the backtest",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type for the backtest',
         },
-        payload: {
-          type: "object",
-          minProperties: 1,
-          description:
-            "Full backtest request wrapper. Expected nesting is payload.data.settings. Required outer shape: { payload: { data: { exchange, exchangeUUID, settings, from, to, interval } } }.",
-        },
+        ...backtestPayloadParam,
         ...paperContextParam,
       },
-      required: ["botType", "payload"],
+      required: ['botType', 'payload'],
     },
   },
   {
-    name: "request_backtest_sync",
+    name: 'request_backtest_sync',
     description:
-      "Submit a server-side backtest request and wait for completion. Discovery tools describe the inner bot settings object, but this tool expects the full request wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. Minimal valid example: { \"botType\": \"dca\", \"paperContext\": false, \"payload\": { \"data\": { \"exchange\": \"binance\", \"exchangeUUID\": \"650e8400-e29b-41d4-a716-446655440001\", \"settings\": { \"name\": \"BTC DCA Strategy\", \"pair\": [\"BTC_USDT\"], \"strategy\": \"LONG\", \"baseOrderSize\": \"100\", \"orderSize\": \"100\", \"orderSizeType\": \"quote\", \"startCondition\": \"ASAP\", \"useDca\": true, \"tpPerc\": \"2\" }, \"from\": 1640995200000, \"to\": 1672531199000, \"interval\": \"1h\" } } }. Returns the full backtest result when complete, or a requestId if timed out. Requires write API key permission.",
+      'Submit a server-side backtest request and wait for completion. Discovery tools describe the inner bot settings object, but this tool expects the full request wrapper with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. DCA minimal example: { "botType": "dca", "paperContext": false, "payload": { "data": { "exchange": "binance", "exchangeUUID": "650e8400-e29b-41d4-a716-446655440001", "settings": { "pair": ["BTC_USDT"], "strategy": "LONG", "baseOrderSize": "100", "orderSize": "100", "orderSizeType": "quote", "startCondition": "ASAP", "useDca": true, "tpPerc": "2" }, "from": 1640995200000, "to": 1672531199000, "interval": "1h" } } }. Combo minimal settings: {"pair":["BTC_USDT"],"strategy":"LONG","baseOrderSize":"100","orderSize":"100","gridLevel":"5","step":"1.5"}. Grid minimal settings: {"pair":"BTC_USDT","topPrice":50000,"lowPrice":40000,"budget":1000,"levels":10} (grid pair is a single string, not array). Call build_backtest_payload_template(botType) for a complete ready-to-fill scaffold. Returns the full backtest result when complete, or a requestId if timed out. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type for the backtest",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type for the backtest',
         },
-        payload: {
-          type: "object",
-          minProperties: 1,
-          description:
-            "Full backtest request wrapper. Expected nesting is payload.data.settings. Required outer shape: { payload: { data: { exchange, exchangeUUID, settings, from, to, interval } } }.",
-        },
+        ...backtestPayloadParam,
         ...fieldsParam,
         ...paperContextParam,
       },
-      required: ["botType", "payload"],
+      required: ['botType', 'payload'],
     },
   },
   {
-    name: "get_backtest_requests",
+    name: 'get_backtest_requests',
     description:
-      "Get a paginated list of backtest requests for a bot type (10 per page, newest first). Supports field selection; use backtest.* prefixes to include linked backtest results.",
+      'Get a paginated list of backtest requests for a bot type (10 per page, newest first). Supports field selection; use backtest.* prefixes to include linked backtest results.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
         },
         ...fieldsParam,
         ...pageParam,
         ...paperContextParam,
       },
-      required: ["botType"],
+      required: ['botType'],
     },
   },
   {
-    name: "get_backtest_request",
+    name: 'get_backtest_request',
     description:
-      "Get a single backtest request by ID. Supports field selection; use backtest.* prefixes to include linked backtest results.",
+      'Get a single backtest request by ID. Supports field selection; use backtest.* prefixes to include linked backtest results.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
         },
         id: {
-          type: "string",
-          description: "Backtest request MongoDB ObjectId",
+          type: 'string',
+          description: 'Backtest request MongoDB ObjectId',
         },
         ...fieldsParam,
       },
-      required: ["botType", "id"],
+      required: ['botType', 'id'],
     },
   },
   {
-    name: "validate_backtest_payload",
+    name: 'validate_backtest_payload',
     description:
-      "Validate a bot backtest request without creating a bot or dispatching a backtest. Use this after building settings from discovery and before estimating cost or submitting a backtest. Discovery tools describe the inner bot settings object, but this tool validates the full request body with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. Minimal valid example: { \"botType\": \"dca\", \"paperContext\": false, \"payload\": { \"data\": { \"exchange\": \"binance\", \"exchangeUUID\": \"650e8400-e29b-41d4-a716-446655440001\", \"settings\": { \"pair\": [\"BTC_USDT\"], \"strategy\": \"LONG\" }, \"from\": 1640995200000, \"to\": 1672531199000, \"interval\": \"1h\" } } }. Returns normalized settings after defaults are applied. Requires write API key permission.",
+      'Validate a bot backtest request without creating a bot or dispatching a backtest. Use this after building settings from discovery and before estimating cost or submitting a backtest. Discovery tools describe the inner bot settings object, but this tool validates the full request body with settings nested at payload.data.settings. Recommended flow: discover -> validate -> estimate -> request -> fetch result. DCA minimal example: { "botType": "dca", "paperContext": false, "payload": { "data": { "exchange": "binance", "exchangeUUID": "650e8400-e29b-41d4-a716-446655440001", "settings": { "pair": ["BTC_USDT"], "strategy": "LONG" }, "from": 1640995200000, "to": 1672531199000, "interval": "1h" } } }. Combo minimal settings: {"pair":["BTC_USDT"],"strategy":"LONG","baseOrderSize":"100","orderSize":"100","gridLevel":"5","step":"1.5"}. Grid minimal settings: {"pair":"BTC_USDT","topPrice":50000,"lowPrice":40000,"budget":1000,"levels":10} (grid pair is a single string, not array). Call build_backtest_payload_template(botType) for a complete ready-to-fill scaffold. Returns normalized settings after defaults are applied. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type to validate",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type to validate',
         },
-        payload: {
-          type: "object",
-          minProperties: 1,
-          description:
-            "Full validation request wrapper. Expected nesting is payload.data.settings. Required outer shape: { payload: { data: { exchange, exchangeUUID, settings, from, to, interval } } }.",
-        },
+        ...backtestPayloadParam,
         ...paperContextParam,
       },
-      required: ["botType", "payload"],
+      required: ['botType', 'payload'],
+    },
+  },
+
+  // ─── BACKTEST HELPERS ───────────────────────────────────────────────────
+
+  {
+    name: 'get_backtest_operation_schema',
+    description:
+      'Return the exact request shape for all backtest operations (validate, estimate-cost, request, request/sync). Call this when unsure how to wrap discovery settings into a backtest payload — faster than consulting the OpenAPI spec.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        botType: {
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
+        },
+      },
+      required: ['botType'],
+    },
+  },
+
+  {
+    name: 'build_backtest_payload_template',
+    description:
+      'Return a minimal valid backtest payload scaffold for a bot type. Fill in exchangeUUID (from get_user_exchanges), tune the settings fields (from get_discovery_bot), then pass the result directly to validate_backtest_payload.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        botType: {
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
+        },
+        exchange: {
+          type: 'string',
+          description:
+            'Exchange code to pre-fill, e.g. "binance", "okxLinear". Default: "binance"',
+        },
+      },
+      required: ['botType'],
     },
   },
 
   // ─── DISCOVERY ─────────────────────────────────────────────────────────
 
   {
-    name: "get_discovery_bots",
+    name: 'get_discovery_bots',
     description:
-      "List schema definitions for all bot types (dca, combo, grid), including sections and field metadata for bot creation and update payloads.",
+      'List schema definitions for all bot types (dca, combo, grid), including sections and field metadata for bot creation and update payloads.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {},
     },
   },
   {
-    name: "get_discovery_bot",
+    name: 'get_discovery_bot',
     description:
-      "Return the schema for a bot type or a single bot section. Use this tool to learn the valid fields for the inner bot settings object used in bot creation, validation, and backtesting. It describes settings fields such as baseOrderSize, orderSize, ordersCount, step, and tpPerc, but it does not define the full backtest request wrapper. For backtest tools, discovered settings belong under payload.data.settings. Recommended flow: inspect sections -> build settings -> wrap in payload -> validate -> estimate -> request.",
+      'Return the schema for a bot type or a single bot section. This describes the INNER settings object only — it does not define the outer envelope for any operation. Layer model: (1) discovery output = inner settings fields; (2) bot create/update body = settings fields flat alongside exchangeUUID and pair; (3) backtest body = { payload: { data: { exchange, exchangeUUID, settings: <inner fields>, from, to, interval } } }. Pair values use {base}_{quote} underscore format, e.g. "BTC_USDT". DCA/Combo accept pair as an array ["BTC_USDT"]; Grid accepts a single string "BTC_USDT". Recommended flow: list sections -> fetch section details -> build settings -> wrap in payload -> validate -> estimate -> request.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
         },
         section: {
-          type: "string",
+          type: 'string',
           description: 'Optional section id, e.g. "take_profit"',
         },
       },
-      required: ["botType"],
+      required: ['botType'],
     },
   },
   {
-    name: "get_discovery_bot_sections",
+    name: 'get_discovery_bot_sections',
     description:
-      "List the available schema sections for a bot type, including id, name, description, and fieldCount. Use this tool to navigate the inner bot settings schema before requesting full field definitions for a single section. It does not define the outer request envelope for backtest tools. For backtesting, the discovered settings must be placed under payload.data.settings. Recommended flow: list sections -> fetch section details -> build settings -> wrap in payload -> validate.",
+      'List the available schema sections for a bot type, including id, name, description, and fieldCount. Use this before get_discovery_bot to know which sections exist. Discovery describes the INNER settings object only — for backtest tools wrap it as: { payload: { data: { exchange, exchangeUUID, settings: <inner fields>, from, to, interval } } }. Recommended flow: list sections -> fetch section details -> build settings -> wrap in payload -> validate.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         botType: {
-          type: "string",
-          enum: ["dca", "combo", "grid"],
-          description: "Bot type",
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
         },
       },
-      required: ["botType"],
+      required: ['botType'],
     },
   },
   {
-    name: "get_discovery_indicators",
+    name: 'get_discovery_indicators',
     description:
-      "List supported indicator types with their supported actions and sections. Optionally filter by action or include exchange-specific supported intervals.",
+      'List supported indicator types with their supported actions and sections. Optionally filter by action or include exchange-specific supported intervals.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         action: {
-          type: "string",
+          type: 'string',
           description:
             'Optional action filter, e.g. "startDeal", "closeDeal", or "stopBot"',
         },
         exchange: {
-          type: "string",
+          type: 'string',
           description:
             'Optional exchange filter to include supportedIntervals, e.g. "binance"',
         },
@@ -1439,204 +1960,205 @@ const tools: Tool[] = [
     },
   },
   {
-    name: "get_discovery_indicator",
+    name: 'get_discovery_indicator',
     description:
-      "Get the full field definition for a single indicator type, including core fields, type-specific fields, example payload, and group rules.",
+      'Get the full field definition for a single indicator type, including core fields, type-specific fields, example payload, and group rules.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         type: {
-          type: "string",
+          type: 'string',
           description: 'Indicator type, e.g. "RSI"',
         },
         exchange: {
-          type: "string",
+          type: 'string',
           description:
             'Optional exchange to filter indicatorInterval values, e.g. "binance"',
         },
       },
-      required: ["type"],
+      required: ['type'],
     },
   },
 
   // ─── USER ───────────────────────────────────────────────────────────────
 
   {
-    name: "get_balances",
+    name: 'get_balances',
     description:
-      "Get user balances across all exchanges. Supports field selection and filtering by exchange, asset, or paper context.",
+      'Get user balances across all exchanges. Supports field selection and filtering by exchange, asset, or paper context.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...fieldsParam,
         exchangeId: {
-          type: "string",
-          description: "Filter by exchange connection UUID",
+          type: 'string',
+          description: 'Filter by exchange connection UUID',
         },
         asset: {
-          type: "string",
+          type: 'string',
           description: 'Filter by single asset, e.g. "BTC"',
         },
         assets: {
-          type: "string",
+          type: 'string',
           description: 'Filter by multiple assets, e.g. "BTC,USDT,ETH"',
         },
         ...paperContextParam,
       },
       not: {
-        required: ["asset", "assets"],
+        required: ['asset', 'assets'],
       },
     },
   },
   {
-    name: "get_user_exchanges",
-    description: "Get user's connected exchange accounts.",
+    name: 'get_user_exchanges',
+    description:
+      "Get the user's connected exchange accounts. Returns exchangeUUID for each connection — this UUID is required for bot creation, backtest tools, and balance filtering. Call this first in any workflow that creates bots or runs backtests.",
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: { ...paperContextParam },
     },
   },
   {
-    name: "get_global_variables",
+    name: 'get_global_variables',
     description:
       "List user's global variables. Global variables can be referenced in bot configurations.",
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: { ...pageParam },
     },
   },
   {
-    name: "create_global_variable",
+    name: 'create_global_variable',
     description:
-      "Create a new global variable. Requires write API key permission.",
+      'Create a new global variable. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
-        name: { type: "string", description: "Variable name" },
+        name: { type: 'string', description: 'Variable name' },
         type: {
-          type: "string",
-          enum: ["text", "int", "float"],
-          description: "Variable type",
+          type: 'string',
+          enum: ['text', 'int', 'float'],
+          description: 'Variable type',
         },
         value: {
-          type: "string",
+          type: 'string',
           description:
-            "Variable value (always as string, validated against type)",
+            'Variable value (always as string, validated against type)',
         },
       },
-      required: ["name", "type", "value"],
+      required: ['name', 'type', 'value'],
     },
   },
   {
-    name: "update_global_variable",
+    name: 'update_global_variable',
     description:
-      "Update an existing global variable. Requires write API key permission.",
+      'Update an existing global variable. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
-        id: { type: "string", description: "Variable ID" },
-        name: { type: "string", description: "New name" },
+        id: { type: 'string', description: 'Variable ID' },
+        name: { type: 'string', description: 'New name' },
         type: {
-          type: "string",
-          enum: ["text", "int", "float"],
-          description: "New type",
+          type: 'string',
+          enum: ['text', 'int', 'float'],
+          description: 'New type',
         },
-        value: { type: "string", description: "New value (must match type)" },
+        value: { type: 'string', description: 'New value (must match type)' },
       },
-      required: ["id"],
+      required: ['id'],
       anyOf: [
-        { required: ["name"] },
-        { required: ["type"] },
-        { required: ["value"] },
+        { required: ['name'] },
+        { required: ['type'] },
+        { required: ['value'] },
       ],
     },
   },
   {
-    name: "delete_global_variable",
+    name: 'delete_global_variable',
     description:
-      "Delete a global variable. Must not be used by any bots. Requires write API key permission.",
+      'Delete a global variable. Must not be used by any bots. Requires write API key permission.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
-        id: { type: "string", description: "Variable ID to delete" },
+        id: { type: 'string', description: 'Variable ID to delete' },
       },
-      required: ["id"],
+      required: ['id'],
     },
   },
 
   // ─── GENERAL ────────────────────────────────────────────────────────────
 
   {
-    name: "get_supported_exchanges",
-    description: "Get a list of supported exchanges (code, market, type).",
-    inputSchema: { type: "object", properties: {} },
+    name: 'get_supported_exchanges',
+    description: 'Get a list of supported exchanges (code, market, type).',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
-    name: "get_screener",
+    name: 'get_screener',
     description:
-      "Get crypto screener data with market metrics. Requires active subscription. Supports field selection and filters for category, market cap, volume, sorting.",
+      'Get crypto screener data with market metrics. Requires active subscription. Supports field selection and filters for category, market cap, volume, sorting.',
     inputSchema: {
-      type: "object",
+      type: 'object',
       properties: {
         ...fieldsParam,
         ...pageParam,
         category: {
-          type: "string",
+          type: 'string',
           description: 'Filter by category, e.g. "Layer 1", "DeFi"',
         },
         minMarketCap: {
-          type: "number",
-          description: "Minimum market cap",
+          type: 'number',
+          description: 'Minimum market cap',
         },
         maxMarketCap: {
-          type: "number",
-          description: "Maximum market cap",
+          type: 'number',
+          description: 'Maximum market cap',
         },
         minVolume: {
-          type: "number",
-          description: "Minimum 24h volume",
+          type: 'number',
+          description: 'Minimum 24h volume',
         },
         sort: {
-          type: "string",
+          type: 'string',
           enum: [
-            "marketCapRank",
-            "currentPrice",
-            "priceChangePercentage24h",
-            "totalVolume",
-            "marketCap",
+            'marketCapRank',
+            'currentPrice',
+            'priceChangePercentage24h',
+            'totalVolume',
+            'marketCap',
           ],
-          description: "Sort field. Default: marketCapRank",
+          description: 'Sort field. Default: marketCapRank',
         },
         order: {
-          type: "string",
-          enum: ["asc", "desc"],
-          description: "Sort order. Default: asc",
+          type: 'string',
+          enum: ['asc', 'desc'],
+          description: 'Sort order. Default: asc',
         },
       },
     },
   },
-];
+]
 
 // ── Tool Handlers ───────────────────────────────────────────────────────────
 
 async function handleToolCall(
   name: string,
   args: Record<string, any>,
-  client: GainiumClient
+  client: GainiumClient,
 ): Promise<string> {
-  Object.defineProperty(args, "__toolName", {
+  Object.defineProperty(args, '__toolName', {
     value: name,
     enumerable: false,
     configurable: true,
-  });
-  enforceGuards(args);
-  validateToolArgs(name, args);
+  })
+  enforceGuards(args)
+  validateToolArgs(name, args)
 
   switch (name) {
     // ── Bot Listing ──────────────────────────────────────────────────────
 
-    case "get_dca_bots": {
-      const res = await client.request("GET", "/api/v2/bots/dca", {
+    case 'get_dca_bots': {
+      const res = await client.request('GET', '/api/v2/bots/dca', {
         query: {
           botId: args.botId,
           fields: args.fields,
@@ -1644,12 +2166,12 @@ async function handleToolCall(
           status: args.status,
         },
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_combo_bots": {
-      const res = await client.request("GET", "/api/v2/bots/combo", {
+    case 'get_combo_bots': {
+      const res = await client.request('GET', '/api/v2/bots/combo', {
         query: {
           botId: args.botId,
           fields: args.fields,
@@ -1657,12 +2179,12 @@ async function handleToolCall(
           status: args.status,
         },
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_grid_bots": {
-      const res = await client.request("GET", "/api/v2/bots/grid", {
+    case 'get_grid_bots': {
+      const res = await client.request('GET', '/api/v2/bots/grid', {
         query: {
           botId: args.botId,
           fields: args.fields,
@@ -1670,174 +2192,206 @@ async function handleToolCall(
           status: args.status,
         },
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
+    }
+
+    case 'get_dca_bot': {
+      const res = await client.request('GET', '/api/v2/bots/dca/details', {
+        query: { botId: args.botId, fields: args.fields },
+        headers: paperHeader(args),
+      })
+      return JSON.stringify(res, null, 2)
+    }
+
+    case 'get_combo_bot': {
+      const res = await client.request('GET', '/api/v2/bots/combo/details', {
+        query: { botId: args.botId, fields: args.fields },
+        headers: paperHeader(args),
+      })
+      return JSON.stringify(res, null, 2)
+    }
+
+    case 'get_grid_bot': {
+      const res = await client.request('GET', '/api/v2/bots/grid/details', {
+        query: { botId: args.botId, fields: args.fields },
+        headers: paperHeader(args),
+      })
+      return JSON.stringify(res, null, 2)
     }
 
     // ── Bot Creation ─────────────────────────────────────────────────────
 
-    case "create_dca_bot": {
-      const { settings = {}, paperContext, ...topLevel } = args;
-      const body = { ...settings, ...topLevel };
-      delete body.settings;
-      delete body.paperContext;
-      const res = await client.request("POST", "/api/v2/bots/dca", {
+    case 'create_dca_bot': {
+      const { settings = {}, paperContext, ...topLevel } = args
+      const body = { ...settings, ...topLevel }
+      delete body.settings
+      delete body.paperContext
+      const res = await client.request('POST', '/api/v2/bots/dca', {
         body,
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "create_combo_bot": {
-      const { settings = {}, paperContext, ...topLevel } = args;
-      const body = { ...settings, ...topLevel };
-      delete body.settings;
-      delete body.paperContext;
-      const res = await client.request("POST", "/api/v2/bots/combo", {
+    case 'create_combo_bot': {
+      const { settings = {}, paperContext, ...topLevel } = args
+      const body = { ...settings, ...topLevel }
+      delete body.settings
+      delete body.paperContext
+      const res = await client.request('POST', '/api/v2/bots/combo', {
         body,
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "create_grid_bot": {
-      const { settings = {}, paperContext, ...topLevel } = args;
-      const body = { ...settings, ...topLevel };
-      delete body.settings;
-      delete body.paperContext;
-      const res = await client.request("POST", "/api/v2/bots/grid", {
+    case 'create_grid_bot': {
+      const { settings = {}, paperContext, ...topLevel } = args
+      const body = { ...settings, ...topLevel }
+      delete body.settings
+      delete body.paperContext
+      const res = await client.request('POST', '/api/v2/bots/grid', {
         body,
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
     // ── Bot Update ───────────────────────────────────────────────────────
 
-    case "update_dca_bot": {
+    case 'update_dca_bot': {
       const res = await client.request(
-        "PUT",
+        'PUT',
         `/api/v2/bots/dca/${args.botId}`,
         {
           body: args.settings,
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "update_combo_bot": {
+    case 'update_combo_bot': {
       const res = await client.request(
-        "PUT",
+        'PUT',
         `/api/v2/bots/combo/${args.botId}`,
         {
           body: args.settings,
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
     // ── Bot Clone ────────────────────────────────────────────────────────
 
-    case "clone_dca_bot": {
+    case 'clone_dca_bot': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/bots/dca/${args.botId}/clone`,
         {
           body: args.overrides || {},
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "clone_combo_bot": {
+    case 'clone_combo_bot': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/bots/combo/${args.botId}/clone`,
         {
           body: args.overrides || {},
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "clone_grid_bot": {
+    case 'clone_grid_bot': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/bots/grid/${args.botId}/clone`,
         {
           body: args.overrides || {},
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
     // ── Bot Lifecycle ────────────────────────────────────────────────────
 
-    case "start_bot": {
+    case 'start_bot': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/bots/${args.botType}/${args.botId}/start`,
         {
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "stop_bot": {
+    case 'stop_bot': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/bots/${args.botType}/${args.botId}/stop`,
         {
+          query: {
+            closeType: args.closeType,
+            closeGridType: args.closeGridType,
+            cancelPartiallyFilled:
+              args.cancelPartiallyFilled !== undefined
+                ? String(args.cancelPartiallyFilled)
+                : undefined,
+          },
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "archive_bot": {
+    case 'archive_bot': {
       const res = await client.request(
-        "DELETE",
+        'DELETE',
         `/api/v2/bots/${args.botType}/${args.botId}`,
         {
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "restore_bot": {
+    case 'restore_bot': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/bots/${args.botType}/${args.botId}/restore`,
         {
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "change_bot_pairs": {
+    case 'change_bot_pairs': {
       const res = await client.request(
-        "PUT",
+        'PUT',
         `/api/v2/bots/dca/${args.botId}/pairs`,
         {
           body: { pair: args.pair },
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
     // ── Deals Listing ────────────────────────────────────────────────────
 
-    case "get_dca_deals": {
-      const res = await client.request("GET", "/api/v2/deals/dca", {
+    case 'get_dca_deals': {
+      const res = await client.request('GET', '/api/v2/deals/dca', {
         query: {
           fields: args.fields,
           page: args.page,
@@ -1845,12 +2399,12 @@ async function handleToolCall(
           botId: args.botId,
         },
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_combo_deals": {
-      const res = await client.request("GET", "/api/v2/deals/combo", {
+    case 'get_combo_deals': {
+      const res = await client.request('GET', '/api/v2/deals/combo', {
         query: {
           fields: args.fields,
           page: args.page,
@@ -1858,12 +2412,12 @@ async function handleToolCall(
           botId: args.botId,
         },
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_terminal_deals": {
-      const res = await client.request("GET", "/api/v2/deals/terminal", {
+    case 'get_terminal_deals': {
+      const res = await client.request('GET', '/api/v2/deals/terminal', {
         query: {
           fields: args.fields,
           page: args.page,
@@ -1871,96 +2425,142 @@ async function handleToolCall(
           botId: args.botId,
         },
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
+    }
+
+    case 'get_dca_deal': {
+      const res = await client.request('GET', '/api/v2/deals/dca/details', {
+        query: { dealId: args.dealId, fields: args.fields },
+        headers: paperHeader(args),
+      })
+      return JSON.stringify(res, null, 2)
+    }
+
+    case 'get_combo_deal': {
+      const res = await client.request('GET', '/api/v2/deals/combo/details', {
+        query: { dealId: args.dealId, fields: args.fields },
+        headers: paperHeader(args),
+      })
+      return JSON.stringify(res, null, 2)
+    }
+
+    case 'get_terminal_deal': {
+      const res = await client.request(
+        'GET',
+        '/api/v2/deals/terminal/details',
+        {
+          query: { dealId: args.dealId, fields: args.fields },
+          headers: paperHeader(args),
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
     // ── Deal Creation & Management ───────────────────────────────────────
 
-    case "create_terminal_deal": {
-      const { settings = {}, paperContext, ...topLevel } = args;
-      const body = { ...settings, ...topLevel };
-      delete body.settings;
-      delete body.paperContext;
-      const res = await client.request("POST", "/api/v2/deals/terminal", {
+    case 'create_terminal_deal': {
+      const { settings = {}, paperContext, ...topLevel } = args
+      const body = { ...settings, ...topLevel }
+      delete body.settings
+      delete body.paperContext
+      const res = await client.request('POST', '/api/v2/deals/terminal', {
         body,
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "update_dca_deal": {
+    case 'update_dca_deal': {
       const res = await client.request(
-        "PUT",
+        'PUT',
         `/api/v2/deals/dca/${args.dealId}`,
         {
           body: args.settings,
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "update_combo_deal": {
+    case 'update_combo_deal': {
       const res = await client.request(
-        "PUT",
+        'PUT',
         `/api/v2/deals/combo/${args.dealId}`,
         {
           body: args.settings,
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "update_terminal_deal": {
+    case 'update_terminal_deal': {
       const res = await client.request(
-        "PUT",
+        'PUT',
         `/api/v2/deals/terminal/${args.dealId}`,
         {
           body: args.settings,
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "start_deal": {
-      const query: Record<string, any> = {};
-      if (args.symbol) query.symbol = args.symbol;
+    case 'start_deal': {
+      const query: Record<string, any> = {}
+      if (args.symbol) query.symbol = args.symbol
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/deals/${args.botType}/${args.botId}/start`,
         {
           query,
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "close_deal": {
+    case 'close_deal': {
       const res = await client.request(
-        "DELETE",
+        'DELETE',
         `/api/v2/deals/${args.dealType}/${args.dealId}`,
         {
           query: { type: args.type },
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "add_funds": {
+    case 'add_funds': {
       const body: Record<string, any> = {
         qty: args.qty,
-      };
-      if (args.type) body.type = args.type;
-      if (args.asset) body.asset = args.asset;
-      if (args.symbol) body.symbol = args.symbol;
+      }
+      if (args.type) body.type = args.type
+      if (args.asset) body.asset = args.asset
+      if (args.symbol) body.symbol = args.symbol
+      const res = await client.request('POST', '/api/v2/deals/dca/add-funds', {
+        query: {
+          dealId: args.dealId,
+          botId: args.botId,
+        },
+        body,
+        headers: paperHeader(args),
+      })
+      return JSON.stringify(res, null, 2)
+    }
+
+    case 'reduce_funds': {
+      const body: Record<string, any> = {
+        qty: args.qty,
+      }
+      if (args.type) body.type = args.type
+      if (args.asset) body.asset = args.asset
+      if (args.symbol) body.symbol = args.symbol
       const res = await client.request(
-        "POST",
-        "/api/v2/deals/dca/add-funds",
+        'POST',
+        '/api/v2/deals/dca/reduce-funds',
         {
           query: {
             dealId: args.dealId,
@@ -1968,105 +2568,83 @@ async function handleToolCall(
           },
           body,
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "reduce_funds": {
+    case 'add_funds_terminal': {
       const body: Record<string, any> = {
         qty: args.qty,
-      };
-      if (args.type) body.type = args.type;
-      if (args.asset) body.asset = args.asset;
-      if (args.symbol) body.symbol = args.symbol;
+      }
+      if (args.type) body.type = args.type
+      if (args.asset) body.asset = args.asset
+      if (args.symbol) body.symbol = args.symbol
       const res = await client.request(
-        "POST",
-        "/api/v2/deals/dca/reduce-funds",
-        {
-          query: {
-            dealId: args.dealId,
-            botId: args.botId,
-          },
-          body,
-          headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
-    }
-
-    case "add_funds_terminal": {
-      const body: Record<string, any> = {
-        qty: args.qty,
-      };
-      if (args.type) body.type = args.type;
-      if (args.asset) body.asset = args.asset;
-      if (args.symbol) body.symbol = args.symbol;
-      const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/deals/terminal/${args.dealId}/add-funds`,
-        { body }
-      );
-      return JSON.stringify(res, null, 2);
+        { body },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "reduce_funds_terminal": {
+    case 'reduce_funds_terminal': {
       const body: Record<string, any> = {
         qty: args.qty,
-      };
-      if (args.type) body.type = args.type;
-      if (args.asset) body.asset = args.asset;
-      if (args.symbol) body.symbol = args.symbol;
+      }
+      if (args.type) body.type = args.type
+      if (args.asset) body.asset = args.asset
+      if (args.symbol) body.symbol = args.symbol
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/deals/terminal/${args.dealId}/reduce-funds`,
-        { body }
-      );
-      return JSON.stringify(res, null, 2);
+        { body },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
     // ── Backtest ─────────────────────────────────────────────────────────
 
-    case "estimate_backtest_cost": {
+    case 'estimate_backtest_cost': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/backtest/${args.botType}/estimate-cost`,
         {
           body: { payload: args.payload },
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "request_backtest": {
+    case 'request_backtest': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/backtest/${args.botType}/request`,
         {
           body: { payload: args.payload },
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "request_backtest_sync": {
+    case 'request_backtest_sync': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/backtest/${args.botType}/request/sync`,
         {
           query: { fields: args.fields },
           body: { payload: args.payload },
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_backtest_requests": {
+    case 'get_backtest_requests': {
       const res = await client.request(
-        "GET",
+        'GET',
         `/api/v2/backtest/${args.botType}/requests`,
         {
           query: {
@@ -2074,85 +2652,200 @@ async function handleToolCall(
             page: args.page,
           },
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_backtest_request": {
+    case 'get_backtest_request': {
       const res = await client.request(
-        "GET",
+        'GET',
         `/api/v2/backtest/${args.botType}/requests/${args.id}`,
         {
           query: { fields: args.fields },
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "validate_backtest_payload": {
+    case 'validate_backtest_payload': {
       const res = await client.request(
-        "POST",
+        'POST',
         `/api/v2/backtest/${args.botType}/validate`,
         {
           body: { payload: args.payload },
           headers: paperHeader(args),
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
+    }
+
+    case 'get_backtest_operation_schema': {
+      const botType: string = args.botType
+      const schema = {
+        botType,
+        outerShape: {
+          botType: `"${botType}"`,
+          paperContext: 'boolean (optional, default false)',
+          payload: {
+            data: {
+              exchange: 'string — exchange code, e.g. "binance", "okxLinear"',
+              exchangeUUID: 'string — UUID from get_user_exchanges',
+              settings: `<inner ${botType} settings object — use get_discovery_bot(botType: "${botType}") to learn fields>`,
+              from: 'number (optional) — range start as Unix ms timestamp',
+              to: 'number (optional) — range end as Unix ms timestamp',
+              interval:
+                'string (optional) — candle interval: "1m"|"5m"|"15m"|"1h"|"4h"|"1d"',
+            },
+          },
+        },
+        operations: [
+          {
+            name: 'validate',
+            method: 'POST',
+            path: `/api/v2/backtest/${botType}/validate`,
+            credits: false,
+            note: 'Validates and returns normalized settings. from/to/interval optional.',
+          },
+          {
+            name: 'estimate-cost',
+            method: 'POST',
+            path: `/api/v2/backtest/${botType}/estimate-cost`,
+            credits: false,
+            note: 'Returns estimated credit cost before committing.',
+          },
+          {
+            name: 'request',
+            method: 'POST',
+            path: `/api/v2/backtest/${botType}/request`,
+            credits: true,
+            note: 'Submits async backtest. Returns requestId.',
+          },
+          {
+            name: 'request/sync',
+            method: 'POST',
+            path: `/api/v2/backtest/${botType}/request/sync`,
+            credits: true,
+            note: 'Submits and waits for result. Returns full result or requestId if timed out.',
+          },
+        ],
+        recommendedFlow:
+          'get_user_exchanges -> get_discovery_bot -> build_backtest_payload_template -> validate_backtest_payload -> estimate_backtest_cost -> request_backtest_sync',
+      }
+      return JSON.stringify(schema, null, 2)
+    }
+
+    case 'build_backtest_payload_template': {
+      const botType: string = args.botType
+      const exchange: string = isNonEmptyString(args.exchange)
+        ? args.exchange
+        : 'binance'
+      const baseSettings: Record<string, any> = {
+        name: `My ${botType.toUpperCase()} backtest`,
+        pair: ['BTC_USDT'],
+        strategy: 'LONG',
+        startCondition: 'ASAP',
+        useTp: true,
+        tpPerc: '2',
+      }
+      if (botType === 'dca') {
+        Object.assign(baseSettings, {
+          baseOrderSize: '100',
+          orderSize: '100',
+          orderSizeType: 'quote',
+          useDca: true,
+          ordersCount: 5,
+          step: '1.5',
+        })
+      } else if (botType === 'combo') {
+        Object.assign(baseSettings, {
+          baseOrderSize: '100',
+          orderSize: '100',
+          gridLevel: '5',
+          step: '1.5',
+        })
+      } else if (botType === 'grid') {
+        Object.assign(baseSettings, {
+          topPrice: 50000,
+          lowPrice: 40000,
+          budget: 1000,
+          levels: 10,
+          gridType: 'arithmetic',
+        })
+      }
+      const template = {
+        botType,
+        paperContext: false,
+        payload: {
+          data: {
+            exchange,
+            exchangeUUID: '<replace: use get_user_exchanges to find your UUID>',
+            from: 1704067200000,
+            to: 1735689600000,
+            interval: '1h',
+            settings: baseSettings,
+          },
+        },
+        _instructions: [
+          'Replace exchangeUUID using get_user_exchanges',
+          'Adjust settings fields using get_discovery_bot for available options',
+          'Pass this object to validate_backtest_payload before estimating cost',
+        ],
+      }
+      return JSON.stringify(template, null, 2)
     }
 
     // ── Discovery ────────────────────────────────────────────────────────
 
-    case "get_discovery_bots": {
-      const res = await client.request("GET", "/api/v2/discovery/bots");
-      return JSON.stringify(res, null, 2);
+    case 'get_discovery_bots': {
+      const res = await client.request('GET', '/api/v2/discovery/bots')
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_discovery_bot": {
+    case 'get_discovery_bot': {
       const res = await client.request(
-        "GET",
+        'GET',
         `/api/v2/discovery/bots/${args.botType}`,
         {
           query: { section: args.section },
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_discovery_bot_sections": {
+    case 'get_discovery_bot_sections': {
       const res = await client.request(
-        "GET",
-        `/api/v2/discovery/bots/${args.botType}/sections`
-      );
-      return JSON.stringify(res, null, 2);
+        'GET',
+        `/api/v2/discovery/bots/${args.botType}/sections`,
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_discovery_indicators": {
-      const res = await client.request("GET", "/api/v2/discovery/indicators", {
+    case 'get_discovery_indicators': {
+      const res = await client.request('GET', '/api/v2/discovery/indicators', {
         query: {
           action: args.action,
           exchange: args.exchange,
         },
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_discovery_indicator": {
+    case 'get_discovery_indicator': {
       const res = await client.request(
-        "GET",
+        'GET',
         `/api/v2/discovery/indicators/${encodeURIComponent(args.type)}`,
         {
           query: { exchange: args.exchange },
-        }
-      );
-      return JSON.stringify(res, null, 2);
+        },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
     // ── User ─────────────────────────────────────────────────────────────
 
-    case "get_balances": {
-      const res = await client.request("GET", "/api/v2/user/balances", {
+    case 'get_balances': {
+      const res = await client.request('GET', '/api/v2/user/balances', {
         query: {
           fields: args.fields,
           exchangeId: args.exchangeId,
@@ -2160,61 +2853,61 @@ async function handleToolCall(
           assets: args.assets,
         },
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_user_exchanges": {
-      const res = await client.request("GET", "/api/v2/user/exchanges", {
+    case 'get_user_exchanges': {
+      const res = await client.request('GET', '/api/v2/user/exchanges', {
         headers: paperHeader(args),
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_global_variables": {
-      const res = await client.request("GET", "/api/v2/user/global-vars", {
+    case 'get_global_variables': {
+      const res = await client.request('GET', '/api/v2/user/global-vars', {
         query: { page: args.page },
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "create_global_variable": {
-      const res = await client.request("POST", "/api/v2/user/global-vars", {
+    case 'create_global_variable': {
+      const res = await client.request('POST', '/api/v2/user/global-vars', {
         body: { name: args.name, type: args.type, value: args.value },
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
-    case "update_global_variable": {
-      const body: Record<string, any> = {};
-      if (args.name !== undefined) body.name = args.name;
-      if (args.type !== undefined) body.type = args.type;
-      if (args.value !== undefined) body.value = args.value;
+    case 'update_global_variable': {
+      const body: Record<string, any> = {}
+      if (args.name !== undefined) body.name = args.name
+      if (args.type !== undefined) body.type = args.type
+      if (args.value !== undefined) body.value = args.value
       const res = await client.request(
-        "PUT",
+        'PUT',
         `/api/v2/user/global-vars/${args.id}`,
-        { body }
-      );
-      return JSON.stringify(res, null, 2);
+        { body },
+      )
+      return JSON.stringify(res, null, 2)
     }
 
-    case "delete_global_variable": {
+    case 'delete_global_variable': {
       const res = await client.request(
-        "DELETE",
-        `/api/v2/user/global-vars/${args.id}`
-      );
-      return JSON.stringify(res, null, 2);
+        'DELETE',
+        `/api/v2/user/global-vars/${args.id}`,
+      )
+      return JSON.stringify(res, null, 2)
     }
 
     // ── General ──────────────────────────────────────────────────────────
 
-    case "get_supported_exchanges": {
-      const res = await client.request("GET", "/api/v2/exchanges");
-      return JSON.stringify(res, null, 2);
+    case 'get_supported_exchanges': {
+      const res = await client.request('GET', '/api/v2/exchanges')
+      return JSON.stringify(res, null, 2)
     }
 
-    case "get_screener": {
-      const res = await client.request("GET", "/api/v2/screener", {
+    case 'get_screener': {
+      const res = await client.request('GET', '/api/v2/screener', {
         query: {
           fields: args.fields,
           page: args.page,
@@ -2225,12 +2918,12 @@ async function handleToolCall(
           sort: args.sort,
           order: args.order,
         },
-      });
-      return JSON.stringify(res, null, 2);
+      })
+      return JSON.stringify(res, null, 2)
     }
 
     default:
-      throw new Error(`Unknown tool: ${name}`);
+      throw new Error(`Unknown tool: ${name}`)
   }
 }
 
@@ -2239,255 +2932,290 @@ async function handleToolCall(
 function createMcpServer(): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { capabilities: { tools: {} } }
-  );
+    { capabilities: { tools: {}, resources: {} } },
+  )
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [
+      {
+        uri: WORKFLOW_RESOURCE_URI,
+        name: 'Gainium agent workflow',
+        description:
+          'Canonical layer model, recommended flows, and terminology reference for using the Gainium MCP tools. Read this to understand how discovery, bot creation, and backtest tools relate to each other.',
+        mimeType: 'text/plain',
+      },
+    ],
+  }))
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri
+    if (uri === WORKFLOW_RESOURCE_URI) {
+      return {
+        contents: [
+          {
+            uri: WORKFLOW_RESOURCE_URI,
+            mimeType: 'text/plain',
+            text: WORKFLOW_RESOURCE_TEXT,
+          },
+        ],
+      }
+    }
+    throw new Error(`Unknown resource: ${uri}`)
+  })
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    const { name, arguments: toolArgs } = request.params;
+    const { name, arguments: toolArgs } = request.params
     try {
-      const client = createGainiumClientFromHeaders(extra.requestInfo?.headers);
-      const args = isPlainObject(toolArgs) ? { ...toolArgs } : {};
-      const result = await handleToolCall(name, args, client);
-      return { content: [{ type: "text" as const, text: result }] };
+      const client = createGainiumClientFromHeaders(extra.requestInfo?.headers)
+      const args = isPlainObject(toolArgs) ? { ...toolArgs } : {}
+      const result = await handleToolCall(name, args, client)
+      return { content: [{ type: 'text' as const, text: result }] }
     } catch (error: any) {
       return {
         content: [
           {
-            type: "text" as const,
+            type: 'text' as const,
             text: `Error: ${error?.message ?? String(error)}`,
           },
         ],
         isError: true,
-      };
+      }
     }
-  });
+  })
 
-  return server;
+  return server
 }
 
 async function startStdioServer(): Promise<void> {
-  const server = createMcpServer();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error(`[${SERVER_NAME}] Server started over stdio (v${SERVER_VERSION})`);
+  const server = createMcpServer()
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+  console.error(
+    `[${SERVER_NAME}] Server started over stdio (v${SERVER_VERSION})`,
+  )
 }
 
 async function startHttpServer(): Promise<void> {
-  const streamableSessions = new Map<string, StreamableHTTPServerTransport>();
-  const sseSessions = new Map<string, SSEServerTransport>();
+  const streamableSessions = new Map<string, StreamableHTTPServerTransport>()
+  const sseSessions = new Map<string, SSEServerTransport>()
 
   const closeAllSessions = async (): Promise<void> => {
     const openTransports = [
       ...streamableSessions.values(),
       ...sseSessions.values(),
-    ];
+    ]
 
-    await Promise.allSettled(openTransports.map((transport) => transport.close()));
-    streamableSessions.clear();
-    sseSessions.clear();
-  };
+    await Promise.allSettled(
+      openTransports.map((transport) => transport.close()),
+    )
+    streamableSessions.clear()
+    sseSessions.clear()
+  }
 
   const httpServer = createServer(async (req, res) => {
     try {
       if (!req.url || !req.method) {
-        writeTextResponse(res, 400, "Invalid request");
-        return;
+        writeTextResponse(res, 400, 'Invalid request')
+        return
       }
 
-      const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
 
       if (url.pathname === MCP_HTTP_PATH) {
-        if (!["GET", "POST", "DELETE"].includes(req.method)) {
-          writeMethodNotAllowed(res, ["GET", "POST", "DELETE"]);
-          return;
+        if (!['GET', 'POST', 'DELETE'].includes(req.method)) {
+          writeMethodNotAllowed(res, ['GET', 'POST', 'DELETE'])
+          return
         }
 
-        const sessionId = getHeaderValue(req.headers["mcp-session-id"]);
-        const parsedBody = req.method === "POST" ? await readJsonBody(req) : undefined;
+        const sessionId = getHeaderValue(req.headers['mcp-session-id'])
+        const parsedBody =
+          req.method === 'POST' ? await readJsonBody(req) : undefined
 
         if (sessionId) {
-          const transport = streamableSessions.get(sessionId);
+          const transport = streamableSessions.get(sessionId)
           if (!transport) {
             if (sseSessions.has(sessionId)) {
               writeJsonRpcError(
                 res,
                 400,
-                "Bad Request: Session exists but uses the deprecated SSE transport"
-              );
-              return;
+                'Bad Request: Session exists but uses the deprecated SSE transport',
+              )
+              return
             }
 
-            writeJsonRpcError(res, 404, "Session not found", -32001);
-            return;
+            writeJsonRpcError(res, 404, 'Session not found', -32001)
+            return
           }
 
-          await transport.handleRequest(req, res, parsedBody);
-          return;
+          await transport.handleRequest(req, res, parsedBody)
+          return
         }
 
-        if (req.method !== "POST" || !isInitializeRequest(parsedBody)) {
+        if (req.method !== 'POST' || !isInitializeRequest(parsedBody)) {
           writeJsonRpcError(
             res,
             400,
-            "Bad Request: No valid MCP session ID provided"
-          );
-          return;
+            'Bad Request: No valid MCP session ID provided',
+          )
+          return
         }
 
-        let transport: StreamableHTTPServerTransport;
+        let transport: StreamableHTTPServerTransport
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
-            streamableSessions.set(newSessionId, transport);
+            streamableSessions.set(newSessionId, transport)
           },
-        });
+        })
 
         transport.onclose = () => {
-          const activeSessionId = transport.sessionId;
+          const activeSessionId = transport.sessionId
           if (activeSessionId) {
-            streamableSessions.delete(activeSessionId);
+            streamableSessions.delete(activeSessionId)
           }
-        };
+        }
 
-        const server = createMcpServer();
-        await server.connect(transport);
-        await transport.handleRequest(req, res, parsedBody);
-        return;
+        const server = createMcpServer()
+        await server.connect(transport)
+        await transport.handleRequest(req, res, parsedBody)
+        return
       }
 
       if (url.pathname === MCP_SSE_PATH) {
-        if (req.method !== "GET") {
-          writeMethodNotAllowed(res, ["GET"]);
-          return;
+        if (req.method !== 'GET') {
+          writeMethodNotAllowed(res, ['GET'])
+          return
         }
 
-        const transport = new SSEServerTransport(MCP_MESSAGES_PATH, res);
-        sseSessions.set(transport.sessionId, transport);
+        const transport = new SSEServerTransport(MCP_MESSAGES_PATH, res)
+        sseSessions.set(transport.sessionId, transport)
         transport.onclose = () => {
-          sseSessions.delete(transport.sessionId);
-        };
+          sseSessions.delete(transport.sessionId)
+        }
 
-        const server = createMcpServer();
-        await server.connect(transport);
-        return;
+        const server = createMcpServer()
+        await server.connect(transport)
+        return
       }
 
       if (url.pathname === MCP_MESSAGES_PATH) {
-        if (req.method !== "POST") {
-          writeMethodNotAllowed(res, ["POST"]);
-          return;
+        if (req.method !== 'POST') {
+          writeMethodNotAllowed(res, ['POST'])
+          return
         }
 
-        const sessionId = url.searchParams.get("sessionId");
+        const sessionId = url.searchParams.get('sessionId')
         if (!sessionId) {
-          writeTextResponse(res, 400, "Missing sessionId query parameter");
-          return;
+          writeTextResponse(res, 400, 'Missing sessionId query parameter')
+          return
         }
 
-        const transport = sseSessions.get(sessionId);
+        const transport = sseSessions.get(sessionId)
         if (!transport) {
           if (streamableSessions.has(sessionId)) {
             writeJsonRpcError(
               res,
               400,
-              "Bad Request: Session exists but uses Streamable HTTP"
-            );
-            return;
+              'Bad Request: Session exists but uses Streamable HTTP',
+            )
+            return
           }
 
-          writeTextResponse(res, 404, "Session not found");
-          return;
+          writeTextResponse(res, 404, 'Session not found')
+          return
         }
 
-        await transport.handlePostMessage(req, res);
-        return;
+        await transport.handlePostMessage(req, res)
+        return
       }
 
-      writeTextResponse(res, 404, "Not Found");
+      writeTextResponse(res, 404, 'Not Found')
     } catch (error: any) {
-      console.error(`[${SERVER_NAME}] HTTP transport error:`, error);
+      console.error(`[${SERVER_NAME}] HTTP transport error:`, error)
 
       if (!res.headersSent) {
-        const message = error?.message || "Internal server error";
+        const message = error?.message || 'Internal server error'
         if (req.url?.startsWith(MCP_HTTP_PATH)) {
-          writeJsonRpcError(res, 500, message, -32603);
+          writeJsonRpcError(res, 500, message, -32603)
         } else {
-          writeTextResponse(res, 500, message);
+          writeTextResponse(res, 500, message)
         }
       } else if (!res.writableEnded) {
-        res.end();
+        res.end()
       }
     }
-  });
+  })
 
-  let isShuttingDown = false;
+  let isShuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
     if (isShuttingDown) {
-      return;
+      return
     }
-    isShuttingDown = true;
+    isShuttingDown = true
 
-    console.error(`[${SERVER_NAME}] Shutting down HTTP server (${signal})`);
-    await closeAllSessions();
+    console.error(`[${SERVER_NAME}] Shutting down HTTP server (${signal})`)
+    await closeAllSessions()
     await new Promise<void>((resolve, reject) => {
       httpServer.close((error) => {
         if (error) {
-          reject(error);
-          return;
+          reject(error)
+          return
         }
-        resolve();
-      });
-    });
-    process.exit(0);
-  };
+        resolve()
+      })
+    })
+    process.exit(0)
+  }
 
-  process.once("SIGINT", () => {
-    void shutdown("SIGINT");
-  });
-  process.once("SIGTERM", () => {
-    void shutdown("SIGTERM");
-  });
+  process.once('SIGINT', () => {
+    void shutdown('SIGINT')
+  })
+  process.once('SIGTERM', () => {
+    void shutdown('SIGTERM')
+  })
 
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {
-      httpServer.off("listening", onListening);
-      reject(error);
-    };
+      httpServer.off('listening', onListening)
+      reject(error)
+    }
     const onListening = () => {
-      httpServer.off("error", onError);
-      resolve();
-    };
+      httpServer.off('error', onError)
+      resolve()
+    }
 
-    httpServer.once("error", onError);
-    httpServer.once("listening", onListening);
-    httpServer.listen(HTTP_PORT, HTTP_HOST);
-  });
+    httpServer.once('error', onError)
+    httpServer.once('listening', onListening)
+    httpServer.listen(HTTP_PORT, HTTP_HOST)
+  })
 
   console.error(
-    `[${SERVER_NAME}] HTTP server started on http://${HTTP_HOST}:${HTTP_PORT}`
-  );
+    `[${SERVER_NAME}] HTTP server started on http://${HTTP_HOST}:${HTTP_PORT}`,
+  )
   console.error(
-    `[${SERVER_NAME}] Streamable HTTP endpoint: ${MCP_HTTP_PATH} (GET/POST/DELETE)`
-  );
+    `[${SERVER_NAME}] Streamable HTTP endpoint: ${MCP_HTTP_PATH} (GET/POST/DELETE)`,
+  )
   console.error(
-    `[${SERVER_NAME}] Deprecated SSE endpoints: ${MCP_SSE_PATH} (GET), ${MCP_MESSAGES_PATH} (POST)`
-  );
+    `[${SERVER_NAME}] Deprecated SSE endpoints: ${MCP_SSE_PATH} (GET), ${MCP_MESSAGES_PATH} (POST)`,
+  )
 }
 
 // ── Start ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  if (TRANSPORT_MODE === "http") {
-    await startHttpServer();
-    return;
+  if (TRANSPORT_MODE === 'http') {
+    await startHttpServer()
+    return
   }
 
-  await startStdioServer();
+  await startStdioServer()
 }
 
-main().catch((err) => {
-  console.error(`[${SERVER_NAME}] Fatal error:`, err);
-  process.exit(1);
-});
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((err) => {
+    console.error(`[${SERVER_NAME}] Fatal error:`, err)
+    process.exit(1)
+  })
+}
