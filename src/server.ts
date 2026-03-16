@@ -294,18 +294,25 @@ export function validateToolArgs(
   // ── Common discriminator validation ──
 
   const validBotTypes = ['dca', 'combo', 'grid']
+  const validBotTypesReadOnly = ['dca', 'combo', 'grid']
   const validDealTypes = ['dca', 'combo', 'terminal']
 
-  // Tools that require botType
-  if (
-    [
-      'list_bots',
-      'get_bot',
-      'create_bot',
-      'update_bot',
-      'clone_bot',
-    ].includes(name)
-  ) {
+  // Tools that require botType (read-only — list and get support hedge types)
+  if (['list_bots', 'get_bot'].includes(name)) {
+    if (!isNonEmptyString(args.botType)) {
+      throw new Error(
+        `'botType' is required. Must be one of: ${validBotTypesReadOnly.join(', ')}`,
+      )
+    }
+    if (!validBotTypesReadOnly.includes(args.botType)) {
+      throw new Error(
+        `Invalid botType '${args.botType}'. Must be one of: ${validBotTypesReadOnly.join(', ')}`,
+      )
+    }
+  }
+
+  // Tools that require botType (write operations — hedge types not supported)
+  if (['create_bot', 'update_bot', 'clone_bot'].includes(name)) {
     if (!isNonEmptyString(args.botType)) {
       throw new Error(
         `'botType' is required. Must be one of: ${validBotTypes.join(', ')}`,
@@ -368,7 +375,7 @@ export function validateToolArgs(
   // update_bot: grid bots have no update endpoint
   if (name === 'update_bot' && args.botType === 'grid') {
     throw new Error(
-      "Grid bots do not have an update endpoint. To modify a grid bot, stop it and create a new one.",
+      'Grid bots do not have an update endpoint. To modify a grid bot, stop it and create a new one.',
     )
   }
 
@@ -1398,7 +1405,8 @@ export const tools: Tool[] = [
         },
         exchange: {
           type: 'string',
-          description: 'Exchange code for template (optional, default: binance)',
+          description:
+            'Exchange code for template (optional, default: binance)',
         },
       },
       required: ['target', 'botType'],
@@ -1514,16 +1522,19 @@ export const tools: Tool[] = [
         },
         name: {
           type: 'string',
-          description: 'Variable name (required for create, optional for update)',
+          description:
+            'Variable name (required for create, optional for update)',
         },
         type: {
           type: 'string',
           enum: ['text', 'int', 'float'],
-          description: 'Variable type (required for create, optional for update)',
+          description:
+            'Variable type (required for create, optional for update)',
         },
         value: {
           type: 'string',
-          description: 'Variable value (required for create, optional for update)',
+          description:
+            'Variable value (required for create, optional for update)',
         },
       },
       required: ['action'],
@@ -1607,10 +1618,14 @@ async function handleToolCall(
 
     case 'get_bot': {
       const botType = args.botType
-      const res = await client.request('GET', `/api/v2/bots/${botType}/details`, {
-        query: { botId: args.botId, fields: args.fields },
-        headers: paperHeader(args),
-      })
+      const res = await client.request(
+        'GET',
+        `/api/v2/bots/${botType}/details`,
+        {
+          query: { botId: args.botId, fields: args.fields },
+          headers: paperHeader(args),
+        },
+      )
       return JSON.stringify(res, null, 2)
     }
 
@@ -1758,10 +1773,14 @@ async function handleToolCall(
 
     case 'get_deal': {
       const dealType = args.dealType
-      const res = await client.request('GET', `/api/v2/deals/${dealType}/details`, {
-        query: { dealId: args.dealId, fields: args.fields },
-        headers: paperHeader(args),
-      })
+      const res = await client.request(
+        'GET',
+        `/api/v2/deals/${dealType}/details`,
+        {
+          query: { dealId: args.dealId, fields: args.fields },
+          headers: paperHeader(args),
+        },
+      )
       return JSON.stringify(res, null, 2)
     }
 
@@ -1851,8 +1870,7 @@ async function handleToolCall(
         }
 
         // DCA/Combo deals
-        const endpoint =
-          action === 'addFunds' ? 'add-funds' : 'reduce-funds'
+        const endpoint = action === 'addFunds' ? 'add-funds' : 'reduce-funds'
         const res = await client.request(
           'POST',
           `/api/v2/deals/dca/${endpoint}`,
@@ -1970,7 +1988,8 @@ async function handleToolCall(
             payload: {
               data: {
                 exchange: 'string — exchange code, e.g. "binance", "okxLinear"',
-                exchangeUUID: 'string — UUID from get_account(info: "exchanges")',
+                exchangeUUID:
+                  'string — UUID from get_account(info: "exchanges")',
                 settings: `<inner ${botType} settings object — use discover(target: "bot", botType: "${botType}") to learn fields>`,
                 from: 'number (optional) — range start as Unix ms timestamp',
                 to: 'number (optional) — range end as Unix ms timestamp',
@@ -2108,12 +2127,16 @@ async function handleToolCall(
       }
 
       if (target === 'indicators') {
-        const res = await client.request('GET', '/api/v2/discovery/indicators', {
-          query: {
-            action: args.action,
-            exchange: args.exchange,
+        const res = await client.request(
+          'GET',
+          '/api/v2/discovery/indicators',
+          {
+            query: {
+              action: args.action,
+              exchange: args.exchange,
+            },
           },
-        })
+        )
         return JSON.stringify(res, null, 2)
       }
 
