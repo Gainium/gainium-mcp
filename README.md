@@ -2,6 +2,8 @@
 
 An MCP (Model Context Protocol) server for [Gainium](https://gainium.io) — the crypto trading bot platform. Lets AI assistants manage your bots, deals, balances, and more through a standard MCP interface.
 
+Detailed setup and connection documentation is available in [docs/using-gainium-mcp.md](docs/using-gainium-mcp.md).
+
 ## Quick Start
 
 ### 1. Get your API keys
