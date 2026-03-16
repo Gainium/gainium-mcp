@@ -942,9 +942,10 @@ export const tools: Tool[] = [
         },
         ...paperContextParam,
         pair: {
-          type: ['array', 'string'],
+          type: 'array',
+          items: { type: 'string' },
           description:
-            'Trading pairs. DCA/Combo: array of {base}_{quote} strings, e.g. ["BTC_USDT"]. Grid: single {base}_{quote} string, e.g. "BTC_USDT"',
+            'Trading pairs as array of {base}_{quote} strings, e.g. ["BTC_USDT"]. For Grid bots pass a single-element array — the server unwraps it automatically.',
         },
         name: { type: 'string', description: 'Bot name' },
         strategy: {
@@ -1622,6 +1623,10 @@ async function handleToolCall(
       delete body.settings
       delete body.paperContext
       delete body.botType
+      // Grid API expects pair as a single string, not an array
+      if (botType === 'grid' && Array.isArray(body.pair)) {
+        body.pair = body.pair[0]
+      }
       const res = await client.request('POST', `/api/v2/bots/${botType}`, {
         body,
         headers: paperHeader(args),
