@@ -14,6 +14,25 @@ export interface GainiumResponse<T = any> {
   errors?: string[][];
 }
 
+// Format a Gainium API error payload into a readable string. The API sometimes returns
+// `reason` as an object and/or a separate `errors` structure; naive String(reason) yields
+// "[object Object]" and hides the real cause (e.g. which pair failed validation).
+function formatApiError(status: number | string, payload: any): string {
+  const reason = payload?.reason;
+  const reasonStr =
+    reason == null
+      ? ""
+      : typeof reason === "string"
+        ? reason
+        : JSON.stringify(reason);
+  const errors = payload?.errors;
+  const errorsStr = errors
+    ? ` Details: ${typeof errors === "string" ? errors : JSON.stringify(errors)}`
+    : "";
+  const base = reasonStr || `HTTP ${status}`;
+  return `Gainium API error: ${base}${errorsStr}`;
+}
+
 export type QueryValue =
   | string
   | number
@@ -101,8 +120,8 @@ export class GainiumClient {
           `Gainium API error ${response.status}: ${errorText}`
         );
       }
-      if (parsed?.reason) {
-        throw new Error(`Gainium API error: ${parsed.reason}`);
+      if (parsed?.reason || parsed?.errors) {
+        throw new Error(formatApiError(response.status, parsed));
       }
       throw new Error(
         `Gainium API error ${response.status}: ${response.statusText}`
@@ -112,11 +131,7 @@ export class GainiumClient {
     const data = (await response.json()) as GainiumResponse<T>;
 
     if (data.status === "NOTOK") {
-      const errMsg = data.reason || "API request failed";
-      const details = data.errors
-        ? ` Details: ${JSON.stringify(data.errors)}`
-        : "";
-      throw new Error(errMsg + details);
+      throw new Error(formatApiError("NOTOK", data));
     }
 
     return data;

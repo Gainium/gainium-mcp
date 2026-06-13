@@ -385,6 +385,117 @@ function paperHeader(args: Record<string, any>): Record<string, string> {
   return headers
 }
 
+// Take-profit value fields. TP only fires when dealCloseCondition === "tp".
+const TP_VALUE_FIELDS = [
+  'tpPerc',
+  'useMultiTp',
+  'multiTp',
+  'trailingTp',
+  'trailingTpPerc',
+  'useMinTP',
+  'minTp',
+  'useFixedTPPrices',
+  'fixedTpPrice',
+]
+
+// Inject safe defaults so feature values are not silently ignored by the API.
+// Mutates `settings` in place; returns human-readable notes for what was injected.
+function applySettingsSafeDefaults(
+  settings: Record<string, any>,
+  kind: 'deal' | 'bot',
+): string[] {
+  const notes: string[] = []
+  if (!settings || typeof settings !== 'object') return notes
+
+  // A deal/bot only takes profit when its close condition is "tp". Deals opened in
+  // the Gainium UI can sit on "manual", which silently ignores tpPerc. When the caller
+  // is configuring TP (useTp:true + a TP value) but didn't pin the close condition,
+  // default it to "tp" so the take-profit actually fires. Scoped to deals because the
+  // API rejects regressing a deal to "manual" (so this is near-idempotent), whereas a
+  // bot may intentionally close by techInd/webhook.
+  if (kind === 'deal') {
+    const settingTp =
+      settings.useTp === true && TP_VALUE_FIELDS.some((f) => f in settings)
+    if (settingTp && !('dealCloseCondition' in settings)) {
+      settings.dealCloseCondition = 'tp'
+      notes.push(
+        'Set dealCloseCondition="tp" so the take-profit actually fires — it is silently ignored while a deal closes by "manual". Pass dealCloseCondition explicitly to override.',
+      )
+    }
+  }
+  return notes
+}
+
+function looseEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a != null && b != null && String(a) === String(b)) return true
+  return false
+}
+
+// Read settings back after a write and report any SCALAR key whose stored value does
+// not match what we sent — i.e. fields the API silently ignored. Best-effort: never
+// throws, and skips arrays/objects (pairs are normalized, multiTp shapes vary).
+async function verifySettingsApplied(
+  client: GainiumClient,
+  kind: 'deal' | 'bot',
+  type: string,
+  id: string,
+  sent: Record<string, any>,
+  args: Record<string, any>,
+): Promise<string[]> {
+  try {
+    // Updates are applied asynchronously ("Settings update scheduled").
+    await new Promise((r) => setTimeout(r, 2000))
+    const path =
+      kind === 'deal'
+        ? `/api/v2/deals/${type}/details`
+        : `/api/v2/bots/${type}/details`
+    const idKey = kind === 'deal' ? 'dealId' : 'botId'
+    const res: any = await client.request('GET', path, {
+      query: { [idKey]: id, fields: 'full' },
+      headers: paperHeader(args),
+    })
+    const stored: Record<string, any> = res?.data?.settings ?? res?.data ?? {}
+    const mismatches: string[] = []
+    for (const [k, v] of Object.entries(sent)) {
+      if (k === 'changed') continue
+      if (v === null || typeof v === 'object') continue // skip normalized arrays/objects
+      if (!(k in stored)) continue // not every sent key is echoed back
+      if (!looseEqual(stored[k], v)) {
+        mismatches.push(
+          `${k}: sent ${JSON.stringify(v)} but stored ${JSON.stringify(stored[k])}`,
+        )
+      }
+    }
+    return mismatches
+  } catch {
+    return [] // verification is best-effort; don't fail the write on read-back error
+  }
+}
+
+// Attach safe-default notes and write-verification result to a write response.
+function decorateWriteResult(
+  res: unknown,
+  defaults: string[],
+  mismatches: string[],
+): Record<string, any> {
+  const out: Record<string, any> =
+    res && typeof res === 'object' ? { ...(res as object) } : { data: res }
+  if (defaults.length) out._appliedDefaults = defaults
+  out._verification =
+    mismatches.length > 0
+      ? {
+          status: 'MISMATCH',
+          note: 'These fields were NOT applied by the API (silently ignored) — check feature toggles / close condition:',
+          mismatches,
+        }
+      : {
+          status: 'OK',
+          note: 'Read-back confirmed the changed fields were applied.',
+        }
+  return out
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -1344,7 +1455,9 @@ export const tools: Tool[] = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'New trading pairs for changePairs action (DCA only), e.g. ["BTC_USDT"]',
+            'Full replacement set of trading pairs for changePairs action (DCA, multi-pair bots only). ' +
+            'Underscore format, e.g. ["BTC_USDT","ETH_USDT"]. Replaces all existing pairs. ' +
+            'Single-coin bots reject pair changes.',
         },
       },
       required: ['action', 'botId', 'botType'],
@@ -1771,12 +1884,21 @@ export const tools: Tool[] = [
         },
         sort: {
           type: 'string',
-          description: 'Sort field (optional)',
+          description:
+            'Sort field (applied client-side; the API does not sort). One of: ' +
+            '"volatility" (largest absolute 24h % change), "priceChange"/"change", ' +
+            '"volume"/"totalVolume", "marketCap", "price". Use "volatility" to find the most volatile pairs.',
         },
         order: {
           type: 'string',
           enum: ['asc', 'desc'],
-          description: 'Sort order (optional)',
+          description: 'Sort order (optional, default desc when sorting)',
+        },
+        maxPages: {
+          type: 'number',
+          description:
+            'When sorting, how many pages (10 coins each, ≤30, default 10) to fetch and rank across. ' +
+            'Higher = wider pool for "most volatile" but more requests.',
         },
       },
     },
@@ -1854,6 +1976,7 @@ async function handleToolCall(
 
     case 'update_bot': {
       const botType = args.botType
+      const defaults = applySettingsSafeDefaults(args.settings, 'bot')
       const res = await client.request(
         'PUT',
         `/api/v2/bots/${botType}/${args.botId}`,
@@ -1862,7 +1985,19 @@ async function handleToolCall(
           headers: paperHeader(args),
         },
       )
-      return JSON.stringify(res, null, 2)
+      const mismatches = await verifySettingsApplied(
+        client,
+        'bot',
+        botType,
+        args.botId,
+        args.settings,
+        args,
+      )
+      return JSON.stringify(
+        decorateWriteResult(res, defaults, mismatches),
+        null,
+        2,
+      )
     }
 
     // ── clone_bot ────────────────────────────────────────────────────────
@@ -1944,7 +2079,10 @@ async function handleToolCall(
           'PUT',
           `/api/v2/bots/dca/${botId}/pairs`,
           {
-            body: { pair: args.pair },
+            // API field is `pairsToSet` (replaces the full pair set), NOT `pair`.
+            // Pairs use underscore format, e.g. ["BTC_USDT","ETH_USDT"].
+            // Only multi-pair bots (useMulti: true) accept pair changes.
+            body: { pairsToSet: args.pair },
             headers: paperHeader(args),
           },
         )
@@ -2021,6 +2159,7 @@ async function handleToolCall(
 
     case 'update_deal': {
       const dealType = args.dealType
+      const defaults = applySettingsSafeDefaults(args.settings, 'deal')
       const res = await client.request(
         'PUT',
         `/api/v2/deals/${dealType}/${args.dealId}`,
@@ -2029,7 +2168,19 @@ async function handleToolCall(
           headers: paperHeader(args),
         },
       )
-      return JSON.stringify(res, null, 2)
+      const mismatches = await verifySettingsApplied(
+        client,
+        'deal',
+        dealType,
+        args.dealId,
+        args.settings,
+        args,
+      )
+      return JSON.stringify(
+        decorateWriteResult(res, defaults, mismatches),
+        null,
+        2,
+      )
     }
 
     // ── manage_deal ──────────────────────────────────────────────────────
@@ -2439,19 +2590,79 @@ async function handleToolCall(
     // ── get_screener ─────────────────────────────────────────────────────
 
     case 'get_screener': {
-      const res = await client.request('GET', '/api/v2/screener', {
-        query: {
-          fields: args.fields,
-          page: args.page,
-          category: args.category,
-          minMarketCap: args.minMarketCap,
-          maxMarketCap: args.maxMarketCap,
-          minVolume: args.minVolume,
-          sort: args.sort,
-          order: args.order,
+      const baseQuery = {
+        category: args.category,
+        minMarketCap: args.minMarketCap,
+        maxMarketCap: args.maxMarketCap,
+        minVolume: args.minVolume,
+      }
+
+      // The screener API ignores sort/order server-side (every sort returns the same
+      // order). When a sort is requested we fetch a bounded number of pages and sort
+      // client-side. Without a sort, pass through with normal pagination.
+      if (!isNonEmptyString(args.sort)) {
+        const res = await client.request('GET', '/api/v2/screener', {
+          query: { ...baseQuery, fields: args.fields, page: args.page },
+        })
+        return JSON.stringify(res, null, 2)
+      }
+
+      const SORT_KEYS: Record<string, (c: any) => number> = {
+        volatility: (c) => Math.abs(Number(c.priceChangePercentage24h) || 0),
+        pricechangepercentage24h: (c) => Number(c.priceChangePercentage24h) || 0,
+        pricechange: (c) => Number(c.priceChangePercentage24h) || 0,
+        change: (c) => Number(c.priceChangePercentage24h) || 0,
+        totalvolume: (c) => Number(c.totalVolume) || 0,
+        volume: (c) => Number(c.totalVolume) || 0,
+        marketcap: (c) => Number(c.marketCap) || 0,
+        currentprice: (c) => Number(c.currentPrice) || 0,
+        price: (c) => Number(c.currentPrice) || 0,
+      }
+      const keyFn = SORT_KEYS[String(args.sort).toLowerCase()]
+      if (!keyFn) {
+        throw new Error(
+          `Unsupported sort "${args.sort}". Supported: ${Object.keys(SORT_KEYS).join(', ')}. ` +
+            '"volatility" = largest absolute 24h price change.',
+        )
+      }
+      const order = args.order === 'asc' ? 'asc' : 'desc'
+      const maxPages = Math.min(Math.max(Number(args.maxPages) || 10, 1), 30)
+
+      // Fetch pages in parallel. Use the API default field set (not args.fields) so the
+      // sort keys (priceChangePercentage24h, totalVolume, marketCap) are always present.
+      const pages = await Promise.all(
+        Array.from({ length: maxPages }, (_, i) =>
+          client
+            .request('GET', '/api/v2/screener', {
+              query: { ...baseQuery, page: i + 1 },
+            })
+            .then((r: any) => (Array.isArray(r?.data) ? r.data : []))
+            .catch(() => []),
+        ),
+      )
+      const all = pages.flat()
+      all.sort((a, b) =>
+        order === 'asc' ? keyFn(a) - keyFn(b) : keyFn(b) - keyFn(a),
+      )
+
+      const perPage = 10
+      const page = Math.max(Number(args.page) || 1, 1)
+      const start = (page - 1) * perPage
+      const out = {
+        status: 'OK',
+        reason: null,
+        data: all.slice(start, start + perPage),
+        meta: {
+          sortedBy: args.sort,
+          order,
+          clientSideSort: true,
+          pagesFetched: maxPages,
+          totalSorted: all.length,
+          page,
+          note: `Sorted client-side across ${all.length} coins from the first ${maxPages} page(s); the screener API does not sort server-side. Raise maxPages (≤30) to widen the pool.`,
         },
-      })
-      return JSON.stringify(res, null, 2)
+      }
+      return JSON.stringify(out, null, 2)
     }
 
     default:
