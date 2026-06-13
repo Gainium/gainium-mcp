@@ -423,6 +423,26 @@ function applySettingsSafeDefaults(
       )
     }
   }
+
+  // Multi-TP / multi-SL items require a unique `uuid` per target alongside
+  // {target, amount}. Auto-generate any missing uuids so callers can pass just
+  // {target, amount}. (The API rejects items without a uuid.)
+  for (const field of ['multiTp', 'multiSl'] as const) {
+    const arr = settings[field]
+    if (!Array.isArray(arr)) continue
+    let injected = 0
+    for (const item of arr) {
+      if (item && typeof item === 'object' && !item.uuid) {
+        item.uuid = randomUUID()
+        injected++
+      }
+    }
+    if (injected > 0) {
+      notes.push(
+        `Generated uuid for ${injected} ${field} item(s) — each target needs a unique id.`,
+      )
+    }
+  }
   return notes
 }
 
