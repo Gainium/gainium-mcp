@@ -44,15 +44,51 @@ This local stdio mode uses `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` from the s
 | `GAINIUM_MCP_HTTP_PATH` | No | `/mcp` | Streamable HTTP endpoint path |
 | `GAINIUM_MCP_SSE_PATH` | No | `/sse` | Deprecated SSE GET endpoint path |
 | `GAINIUM_MCP_MESSAGES_PATH` | No | `/messages` | Deprecated SSE POST endpoint path |
+| `GAINIUM_OAUTH_ISSUER` | No | — | Authorization-server base URL. Setting this (with `MCP_INTROSPECTION_SECRET`, in HTTP mode) enables OAuth protected-resource mode |
+| `GAINIUM_INTROSPECTION_URL` | No | `<issuer>/oauth/introspect` | Token introspection endpoint |
+| `MCP_INTROSPECTION_SECRET` | No | — | Shared secret presented to the introspection endpoint (must match the auth server) |
+| `GAINIUM_MCP_PUBLIC_URL` | No | derived from request | Public base URL used in the protected-resource metadata |
 
 ## Authentication Modes
 
-`gainium-mcp` supports both deployment models:
+`gainium-mcp` supports three deployment models:
 
-- Local stdio mode: the MCP server reads `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` from env vars.
-- Hosted HTTP mode: each request can send `X-API-Key` and `X-API-Secret` headers so one shared server can serve many users.
+- **Local stdio mode:** the MCP server reads `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` from env vars.
+- **OAuth 2.1 hosted mode (recommended for hosted/public):** the server acts as an OAuth protected resource. Clients (e.g. the Claude connector) obtain an access token from the Gainium authorization server and send it as `Authorization: Bearer <token>`. See [OAuth 2.1 hosted mode](#oauth-21-hosted-mode) below.
+- **Header hosted mode (legacy/self-hosted):** each request sends `X-API-Key` and `X-API-Secret` headers so one shared server can serve many users.
 
-For HTTP mode, request headers take priority. If the headers are missing, the server falls back to `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` if they are set.
+In header/stdio mode, request headers take priority, falling back to `GAINIUM_API_KEY` / `GAINIUM_API_SECRET`. When OAuth mode is enabled, the Bearer token is required and the `X-API-Key`/`X-API-Secret` headers are ignored.
+
+### OAuth 2.1 hosted mode
+
+This is the mode used for the public `https://mcp.gainium.io/mcp` endpoint and the Anthropic Claude connector directory (which requires OAuth and forbids API-key headers).
+
+Enable it by setting, in HTTP mode:
+
+```bash
+export GAINIUM_MCP_TRANSPORT=http
+export GAINIUM_OAUTH_ISSUER=https://app.gainium.io        # Gainium authorization server
+export MCP_INTROSPECTION_SECRET=<shared-secret>           # must match the auth server
+export GAINIUM_MCP_PUBLIC_URL=https://mcp.gainium.io      # this server's public URL
+# optional, defaults to <issuer>/oauth/introspect:
+# export GAINIUM_INTROSPECTION_URL=https://app.gainium.io/oauth/introspect
+node dist/server.js
+```
+
+When enabled, the server:
+
+1. Serves **OAuth Protected Resource Metadata** (RFC 9728) at
+   `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`,
+   advertising the authorization server.
+2. Rejects unauthenticated MCP requests with **`401 Unauthorized`** and a
+   `WWW-Authenticate: Bearer resource_metadata="…"` header, so clients can discover
+   the auth server and run the OAuth flow (Dynamic Client Registration + PKCE).
+3. Validates the Bearer access token on each request via the auth server's
+   **token introspection** endpoint, resolving it to the user's Gainium
+   `(apiKey, apiSecret)` and per-key restrictions (read/write, paper-only, single-bot),
+   which are still enforced server-side. Introspection results are cached briefly.
+
+The local stdio path is unaffected by these variables.
 
 ## HTTP and SSE Mode
 
@@ -70,107 +106,51 @@ When HTTP mode is enabled, the server exposes both transport styles:
 - `GET|POST|DELETE /mcp` for the current Streamable HTTP transport
 - `GET /sse` plus `POST /messages?sessionId=...` for deprecated HTTP+SSE clients
 
-This makes one server process compatible with both modern MCP HTTP clients and older SSE-based integrations. In hosted mode, callers should send their Gainium credentials on each request as `X-API-Key` and `X-API-Secret`.
+This makes one server process compatible with both modern MCP HTTP clients and older SSE-based integrations. In hosted mode, authenticate with OAuth (see [OAuth 2.1 hosted mode](#oauth-21-hosted-mode)) or, for self-hosted/legacy setups, send `X-API-Key` and `X-API-Secret` on each request.
 
-## Available Tools (48)
+## Available Tools (17)
 
-### Bots — Read
+As of v3.0.0 the toolset is consolidated: a single tool per operation, with a
+`botType` / `dealType` / `action` discriminator instead of one tool per variant.
+Every tool carries an MCP safety annotation — read-only tools set `readOnlyHint`,
+write tools set `destructiveHint`.
 
-| Tool | Description |
-|---|---|
-| `get_dca_bots` | List DCA bots with field selection and filters |
-| `get_combo_bots` | List Combo bots with field selection and filters |
-| `get_grid_bots` | List Grid bots with field selection and filters |
+### Bots
 
-### Bots — Create
+| Tool | Access | Description |
+|---|---|---|
+| `list_bots` | read | List bots by type (`dca`, `combo`, `grid`) with filters and field selection |
+| `get_bot` | read | Get a single bot by id and type |
+| `create_bot` | write | Create a bot (`dca`, `combo`, or `grid`) |
+| `update_bot` | write | Update bot settings |
+| `clone_bot` | write | Clone a bot with optional overrides |
+| `manage_bot` | write | Lifecycle action: `start`, `stop`, `archive`, `restore`, `changePairs` |
 
-| Tool | Description |
-|---|---|
-| `create_dca_bot` | Create a new DCA bot |
-| `create_combo_bot` | Create a new Combo bot |
-| `create_grid_bot` | Create a new Grid bot |
+### Deals
 
-### Bots — Update & Clone
-
-| Tool | Description |
-|---|---|
-| `update_dca_bot` | Update DCA bot settings |
-| `update_combo_bot` | Update Combo bot settings |
-| `clone_dca_bot` | Clone a DCA bot with optional overrides |
-| `clone_combo_bot` | Clone a Combo bot with optional overrides |
-| `clone_grid_bot` | Clone a Grid bot with optional overrides |
-
-### Bots — Lifecycle
-
-| Tool | Description |
-|---|---|
-| `start_bot` | Start a bot (dca, combo, or grid) |
-| `stop_bot` | Stop a running bot |
-| `archive_bot` | Archive a stopped bot (soft delete) |
-| `restore_bot` | Restore an archived bot |
-| `change_bot_pairs` | Change trading pairs for a DCA bot |
-
-### Deals — Read
-
-| Tool | Description |
-|---|---|
-| `get_dca_deals` | List DCA deals with filters and field selection |
-| `get_combo_deals` | List Combo deals with filters and field selection |
-| `get_terminal_deals` | List Terminal deals with filters and field selection |
-
-### Deals — Create & Manage
-
-| Tool | Description |
-|---|---|
-| `create_terminal_deal` | Create a one-time terminal deal |
-| `update_dca_deal` | Update active DCA deal settings |
-| `update_combo_deal` | Update active Combo deal settings |
-| `update_terminal_deal` | Update active Terminal deal settings |
-| `start_deal` | Start a new deal for a bot |
-| `close_deal` | Close an active deal (dca, combo, or terminal) |
-| `add_funds` | Add funds to a DCA deal |
-| `reduce_funds` | Reduce funds from a DCA deal |
-| `add_funds_terminal` | Add funds to a Terminal deal |
-| `reduce_funds_terminal` | Reduce funds from a Terminal deal |
+| Tool | Access | Description |
+|---|---|---|
+| `list_deals` | read | List deals by type (`dca`, `combo`, `terminal`) with filters |
+| `get_deal` | read | Get a single deal by id and type |
+| `create_deal` | write | Create a deal |
+| `update_deal` | write | Update an active deal |
+| `manage_deal` | write | Deal action: `close`, `addFunds`, `reduceFunds` |
 
 ### Backtest
 
-| Tool | Description |
-|---|---|
-| `estimate_backtest_cost` | Estimate backtest cost in credits |
-| `request_backtest` | Submit async backtest request |
-| `request_backtest_sync` | Submit backtest and wait for result (up to 1h) |
-| `get_backtest_requests` | List backtest requests for a bot type |
-| `get_backtest_request` | Get a single backtest request by ID |
-| `validate_backtest_payload` | Validate bot settings and return normalized backtest payload |
+| Tool | Access | Description |
+|---|---|---|
+| `run_backtest` | read | Run a backtest: `validate`, `estimate`, async, or sync |
+| `backtest_info` | read | List backtest requests or get one by ID |
 
-### Discovery
+### Discovery, Account & Market
 
-| Tool | Description |
-|---|---|
-| `get_discovery_bots` | List schema definitions for all bot types |
-| `get_discovery_bot` | Get the full schema definition for one bot type |
-| `get_discovery_bot_sections` | List section summaries for one bot type |
-| `get_discovery_indicators` | List supported indicator types and capabilities |
-| `get_discovery_indicator` | Get the full field definition for one indicator type |
-
-### User & Account
-
-| Tool | Description |
-|---|---|
-| `get_balances` | Get balances across exchanges |
-| `get_user_exchanges` | List connected exchange accounts |
-| `get_global_variables` | List global variables |
-| `create_global_variable` | Create a global variable |
-| `update_global_variable` | Update a global variable |
-| `delete_global_variable` | Delete a global variable |
-
-### General
-
-| Tool | Description |
-|---|---|
-| `get_supported_exchanges` | List supported exchanges |
-| `get_screener` | Crypto screener with market metrics |
+| Tool | Access | Description |
+|---|---|---|
+| `discover` | read | Schema discovery for bot types and indicators |
+| `get_account` | read | Balances, connected exchanges, supported exchanges, and global variables |
+| `get_screener` | read | Cryptocurrency screener with market metrics |
+| `manage_global_variable` | write | Global variable action: `create`, `update`, `delete` |
 
 ## Field Selection
 
@@ -183,14 +163,14 @@ Using `minimal` reduces payload size by ~85%.
 
 ## API Permissions
 
-- **Read-only key**: Use `get_*` tools (bots, deals, balances, screener)
-- **Write key**: All tools including create, update, start, stop, archive
+- **Read-only key**: read tools only (`list_*`, `get_*`, `discover`, `run_backtest`, `backtest_info`, `get_screener`)
+- **Write key**: all tools, including `create_*`, `update_*`, `clone_bot`, `manage_bot`, `manage_deal`, and `manage_global_variable`
 
 ## Development
 
 ```bash
 # Clone and install
-git clone https://github.com/nicogainium/gainium-mcp.git
+git clone https://github.com/gainium/gainium-mcp.git
 cd gainium-mcp
 npm install
 

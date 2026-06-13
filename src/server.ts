@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import {
   createServer,
   type IncomingMessage,
@@ -25,7 +25,7 @@ import { GainiumClient } from './gainium-client.js'
 // ── Environment ──────────────────────────────────────────────────────────────
 
 const SERVER_NAME = 'gainium-mcp'
-const SERVER_VERSION = '3.0.0'
+const SERVER_VERSION = '3.1.0'
 
 const API_KEY = process.env.GAINIUM_API_KEY
 const API_SECRET = process.env.GAINIUM_API_SECRET
@@ -52,6 +52,27 @@ const MCP_MESSAGES_PATH = normalizePath(
   process.env.GAINIUM_MCP_MESSAGES_PATH ||
     process.env.MCP_MESSAGES_PATH ||
     '/messages',
+)
+
+// ── OAuth resource server (hosted HTTP mode) ───────────────────────────────
+// When GAINIUM_OAUTH_ISSUER + MCP_INTROSPECTION_SECRET are set and the
+// transport is HTTP, this server acts as an OAuth 2.1 protected resource
+// (MCP auth spec + RFC 9728): it advertises the authorization server, rejects
+// unauthenticated requests with 401 + WWW-Authenticate, and resolves the
+// Bearer access token to the user's Gainium (apiKey, apiSecret) via the auth
+// server's introspection endpoint. The local-stdio env-var path is untouched.
+const OAUTH_ISSUER =
+  process.env.GAINIUM_OAUTH_ISSUER?.trim().replace(/\/$/, '') || undefined
+const INTROSPECTION_URL =
+  process.env.GAINIUM_INTROSPECTION_URL?.trim() ||
+  (OAUTH_ISSUER ? `${OAUTH_ISSUER}/oauth/introspect` : undefined)
+const INTROSPECTION_SECRET = process.env.MCP_INTROSPECTION_SECRET?.trim() || undefined
+// Optional fixed public base (e.g. https://mcp.gainium.io) for the resource
+// metadata; otherwise derived from the request host.
+const MCP_PUBLIC_URL =
+  process.env.GAINIUM_MCP_PUBLIC_URL?.trim().replace(/\/$/, '') || undefined
+const OAUTH_ENABLED = Boolean(
+  OAUTH_ISSUER && INTROSPECTION_URL && INTROSPECTION_SECRET,
 )
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -119,9 +140,102 @@ function getRequestHeader(
   return undefined
 }
 
-function createGainiumClientFromHeaders(
+function extractBearer(
+  value: string | string[] | undefined,
+): string | undefined {
+  const v = Array.isArray(value) ? value[0] : value
+  if (!v) {
+    return undefined
+  }
+  const match = /^Bearer\s+(.+)$/i.exec(v.trim())
+  return match ? match[1].trim() : undefined
+}
+
+interface IntrospectionResult {
+  active: boolean
+  apiKey?: string
+  apiSecret?: string
+  scope?: string
+  restrictions?: {
+    permission?: string
+    paperContext?: boolean | null
+    botId?: string | null
+  }
+}
+
+const introspectionCache = new Map<
+  string,
+  { result: IntrospectionResult; expiresAt: number }
+>()
+const INTROSPECTION_TTL_MS = 60_000
+
+// Validate an access token against the authorization server's introspection
+// endpoint and resolve it to the user's Gainium credentials. Results are
+// cached briefly so repeated tool calls in a session don't re-introspect.
+async function introspectToken(token: string): Promise<IntrospectionResult> {
+  if (!OAUTH_ENABLED || !INTROSPECTION_URL || !INTROSPECTION_SECRET) {
+    return { active: false }
+  }
+  const cacheKey = createHash('sha256').update(token).digest('hex')
+  const cached = introspectionCache.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result
+  }
+
+  let result: IntrospectionResult = { active: false }
+  try {
+    const res = await fetch(INTROSPECTION_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Bearer ${INTROSPECTION_SECRET}`,
+      },
+      body: new URLSearchParams({ token }).toString(),
+    })
+    if (res.ok) {
+      const data: any = await res.json()
+      result = data?.active
+        ? {
+            active: true,
+            apiKey: data.gainium_api_key,
+            apiSecret: data.gainium_api_secret,
+            scope: data.scope,
+            restrictions: data.restrictions,
+          }
+        : { active: false }
+    }
+  } catch (error) {
+    console.error(`[${SERVER_NAME}] introspection failed:`, error)
+    return { active: false }
+  }
+
+  // Cache active results for the full TTL; inactive ones briefly to avoid
+  // hammering the auth server on a bad token.
+  introspectionCache.set(cacheKey, {
+    result,
+    expiresAt: Date.now() + (result.active ? INTROSPECTION_TTL_MS : 5_000),
+  })
+  return result
+}
+
+async function createGainiumClientFromHeaders(
   headers: IsomorphicHeaders | undefined,
-): GainiumClient {
+): Promise<GainiumClient> {
+  // Hosted OAuth mode: the Bearer access token resolves to the user's key.
+  if (OAUTH_ENABLED) {
+    const token = extractBearer(getRequestHeader(headers, 'authorization'))
+    if (token) {
+      const intro = await introspectToken(token)
+      if (intro.active && intro.apiKey && intro.apiSecret) {
+        return new GainiumClient(BASE_URL, intro.apiKey, intro.apiSecret)
+      }
+    }
+    throw new Error(
+      'Unauthorized: a valid OAuth access token is required to access this Gainium MCP server.',
+    )
+  }
+
+  // Local stdio / self-hosted: X-API-Key/X-API-Secret headers or env vars.
   const apiKey = getRequestHeader(headers, 'x-api-key') || API_KEY
   const apiSecret = getRequestHeader(headers, 'x-api-secret') || API_SECRET
 
@@ -132,6 +246,76 @@ function createGainiumClientFromHeaders(
   }
 
   return new GainiumClient(BASE_URL, apiKey, apiSecret)
+}
+
+// ── OAuth protected-resource metadata + 401 challenge (RFC 9728) ───────────
+function publicBaseUrl(req: IncomingMessage): string {
+  if (MCP_PUBLIC_URL) {
+    return MCP_PUBLIC_URL
+  }
+  const proto =
+    getHeaderValue(req.headers['x-forwarded-proto'])?.split(',')[0]?.trim() ||
+    'http'
+  const host = req.headers.host || `${HTTP_HOST}:${HTTP_PORT}`
+  return `${proto}://${host}`
+}
+
+function resourceMetadataPath(): string {
+  // RFC 9728 path-insertion for a resource that has a path component.
+  return `/.well-known/oauth-protected-resource${MCP_HTTP_PATH}`
+}
+
+function resourceMetadataUrl(req: IncomingMessage): string {
+  return `${publicBaseUrl(req)}${resourceMetadataPath()}`
+}
+
+function resourceMetadataDoc(req: IncomingMessage): Record<string, unknown> {
+  const base = publicBaseUrl(req)
+  return {
+    resource: `${base}${MCP_HTTP_PATH}`,
+    authorization_servers: [OAUTH_ISSUER],
+    scopes_supported: ['read', 'write'],
+    bearer_methods_supported: ['header'],
+  }
+}
+
+function writeUnauthorized(res: ServerResponse, req: IncomingMessage): void {
+  res.statusCode = 401
+  res.setHeader(
+    'WWW-Authenticate',
+    `Bearer resource_metadata="${resourceMetadataUrl(req)}"`,
+  )
+  res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate')
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.end(
+    JSON.stringify({
+      error: 'invalid_token',
+      error_description: 'Missing or invalid OAuth access token',
+    }),
+  )
+}
+
+// Returns true if the request is authenticated (or OAuth is disabled).
+// Otherwise it has already written a 401 challenge and the caller should stop.
+async function ensureAuthorized(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<boolean> {
+  if (!OAUTH_ENABLED) {
+    return true
+  }
+  const token = extractBearer(req.headers['authorization'])
+  if (!token) {
+    writeUnauthorized(res, req)
+    return false
+  }
+  const intro = await introspectToken(token)
+  if (!intro.active) {
+    writeUnauthorized(res, req)
+    return false
+  }
+  return true
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -888,6 +1072,7 @@ export const tools: Tool[] = [
 
   {
     name: 'list_bots',
+    annotations: { title: 'List Bots', readOnlyHint: true },
     description:
       'List bots by type (DCA, Combo, or Grid). Supports field selection presets (minimal, standard, extended, full). Supports filtering by status and paper/real trading context.',
     inputSchema: {
@@ -909,6 +1094,7 @@ export const tools: Tool[] = [
 
   {
     name: 'get_bot',
+    annotations: { title: 'Get Bot', readOnlyHint: true },
     description:
       'Get a single bot by its MongoDB ObjectId or UUID. Supports the same field selection presets as list_bots.',
     inputSchema: {
@@ -929,6 +1115,7 @@ export const tools: Tool[] = [
 
   {
     name: 'create_bot',
+    annotations: { title: 'Create Bot', readOnlyHint: false, destructiveHint: true },
     description:
       'Create a new bot in a single step — no follow-up update needed. ' +
       'The top-level properties cover the most common fields. For any field from discover(target: "bot") that is NOT listed here (e.g. startOrderType, useMoveTP, moveTPTrigger, moveTPValue, stopLossTimeout, takeProfitTimeout, dcaOrdersMultiplier, dcaStepMultiplier, trailingTP, trailingTPPerc, indicators, timers, and any other discovery field), ' +
@@ -1068,6 +1255,7 @@ export const tools: Tool[] = [
 
   {
     name: 'update_bot',
+    annotations: { title: 'Update Bot', readOnlyHint: false, destructiveHint: true },
     description:
       'Update an existing bot (DCA or Combo only; Grid has no update endpoint). Pass only the fields you want to change. Settings object must be non-empty. Boolean gate enforcement: feature value fields are silently ignored unless their toggle is set to true.',
     inputSchema: {
@@ -1093,6 +1281,7 @@ export const tools: Tool[] = [
 
   {
     name: 'clone_bot',
+    annotations: { title: 'Clone Bot', readOnlyHint: false, destructiveHint: true },
     description:
       'Clone an existing bot and optionally override settings. Returns the new bot ID.',
     inputSchema: {
@@ -1117,6 +1306,7 @@ export const tools: Tool[] = [
 
   {
     name: 'manage_bot',
+    annotations: { title: 'Manage Bot Lifecycle', readOnlyHint: false, destructiveHint: true },
     description:
       'Manage bot lifecycle: start, stop, archive, restore, or change trading pairs (DCA only). Each action has specific requirements.',
     inputSchema: {
@@ -1165,6 +1355,7 @@ export const tools: Tool[] = [
 
   {
     name: 'list_deals',
+    annotations: { title: 'List Deals', readOnlyHint: true },
     description:
       'List deals by type (DCA, Combo, or Terminal). Supports field selection presets. Supports filtering by status and botId.',
     inputSchema: {
@@ -1190,6 +1381,7 @@ export const tools: Tool[] = [
 
   {
     name: 'get_deal',
+    annotations: { title: 'Get Deal', readOnlyHint: true },
     description:
       'Get a single deal by its MongoDB ObjectId. Supports the same field selection presets as list_deals.',
     inputSchema: {
@@ -1210,6 +1402,7 @@ export const tools: Tool[] = [
 
   {
     name: 'create_deal',
+    annotations: { title: 'Create Deal', readOnlyHint: false, destructiveHint: true },
     description:
       'Create a new deal. For dca/combo: starts a deal from an existing bot. For terminal: creates a standalone terminal deal.',
     inputSchema: {
@@ -1274,6 +1467,7 @@ export const tools: Tool[] = [
 
   {
     name: 'update_deal',
+    annotations: { title: 'Update Deal', readOnlyHint: false, destructiveHint: true },
     description:
       'Update an existing deal. Pass only the fields you want to change. Settings object must be non-empty.',
     inputSchema: {
@@ -1299,6 +1493,7 @@ export const tools: Tool[] = [
 
   {
     name: 'manage_deal',
+    annotations: { title: 'Manage Deal', readOnlyHint: false, destructiveHint: true },
     description:
       'Manage deal operations: close a deal, add funds, or reduce funds. Each action has specific requirements.',
     inputSchema: {
@@ -1352,6 +1547,7 @@ export const tools: Tool[] = [
 
   {
     name: 'run_backtest',
+    annotations: { title: 'Run Backtest', readOnlyHint: true },
     description:
       'Run a backtest operation: validate, estimate cost, request async, or request with sync response. Pass a backtest payload with exchange, exchangeUUID, and bot settings.',
     inputSchema: {
@@ -1381,6 +1577,7 @@ export const tools: Tool[] = [
 
   {
     name: 'backtest_info',
+    annotations: { title: 'Backtest Info', readOnlyHint: true },
     description:
       'Get backtest information: list requests, fetch a specific request, get operation schema, or build a payload template.',
     inputSchema: {
@@ -1417,6 +1614,7 @@ export const tools: Tool[] = [
 
   {
     name: 'discover',
+    annotations: { title: 'Discover Resources', readOnlyHint: true },
     description:
       'Discover bots, bot details, bot sections, indicators, or supported exchanges. Use this to learn available fields, defaults, and strategies.',
     inputSchema: {
@@ -1466,6 +1664,7 @@ export const tools: Tool[] = [
 
   {
     name: 'get_account',
+    annotations: { title: 'Get Account', readOnlyHint: true },
     description:
       'Get account information: balances, connected exchanges, global variables, or supported exchanges.',
     inputSchema: {
@@ -1506,6 +1705,7 @@ export const tools: Tool[] = [
 
   {
     name: 'manage_global_variable',
+    annotations: { title: 'Manage Global Variable', readOnlyHint: false, destructiveHint: true },
     description:
       'Create, update, or delete a global variable. Variables are user-defined constants accessible in strategies.',
     inputSchema: {
@@ -1545,6 +1745,7 @@ export const tools: Tool[] = [
 
   {
     name: 'get_screener',
+    annotations: { title: 'Get Screener', readOnlyHint: true },
     description:
       'Get cryptocurrency screener results. Filter by market cap, volume, and sort by various metrics.',
     inputSchema: {
@@ -2299,7 +2500,9 @@ function createMcpServer(): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: toolArgs } = request.params
     try {
-      const client = createGainiumClientFromHeaders(extra.requestInfo?.headers)
+      const client = await createGainiumClientFromHeaders(
+        extra.requestInfo?.headers,
+      )
       const args = isPlainObject(toolArgs) ? { ...toolArgs } : {}
       const result = await handleToolCall(name, args, client)
       return { content: [{ type: 'text' as const, text: result }] }
@@ -2354,9 +2557,33 @@ async function startHttpServer(): Promise<void> {
 
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
 
+      // OAuth protected-resource metadata (RFC 9728). Served at both the
+      // bare path and the path-inserted variant so clients find it either way.
+      if (
+        OAUTH_ENABLED &&
+        (url.pathname === resourceMetadataPath() ||
+          url.pathname === '/.well-known/oauth-protected-resource')
+      ) {
+        if (req.method !== 'GET') {
+          writeMethodNotAllowed(res, ['GET'])
+          return
+        }
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.end(JSON.stringify(resourceMetadataDoc(req)))
+        return
+      }
+
       if (url.pathname === MCP_HTTP_PATH) {
         if (!['GET', 'POST', 'DELETE'].includes(req.method)) {
           writeMethodNotAllowed(res, ['GET', 'POST', 'DELETE'])
+          return
+        }
+
+        // Reject unauthenticated requests with a 401 challenge so the client
+        // can discover the authorization server and run the OAuth flow.
+        if (!(await ensureAuthorized(req, res))) {
           return
         }
 
@@ -2420,6 +2647,10 @@ async function startHttpServer(): Promise<void> {
           return
         }
 
+        if (!(await ensureAuthorized(req, res))) {
+          return
+        }
+
         const transport = new SSEServerTransport(MCP_MESSAGES_PATH, res)
         sseSessions.set(transport.sessionId, transport)
         transport.onclose = () => {
@@ -2434,6 +2665,10 @@ async function startHttpServer(): Promise<void> {
       if (url.pathname === MCP_MESSAGES_PATH) {
         if (req.method !== 'POST') {
           writeMethodNotAllowed(res, ['POST'])
+          return
+        }
+
+        if (!(await ensureAuthorized(req, res))) {
           return
         }
 
