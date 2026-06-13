@@ -398,9 +398,24 @@ const TP_VALUE_FIELDS = [
   'fixedTpPrice',
 ]
 
+// Pure client-side sort key functions for get_screener. The screener API ignores
+// sort/order server-side, so we sort the fetched coins by these keys. Exported for
+// unit testing (the resolution + ordering logic is pure; only the fetch is networked).
+export const SCREENER_SORT_KEYS: Record<string, (c: any) => number> = {
+  volatility: (c) => Math.abs(Number(c.priceChangePercentage24h) || 0),
+  pricechangepercentage24h: (c) => Number(c.priceChangePercentage24h) || 0,
+  pricechange: (c) => Number(c.priceChangePercentage24h) || 0,
+  change: (c) => Number(c.priceChangePercentage24h) || 0,
+  totalvolume: (c) => Number(c.totalVolume) || 0,
+  volume: (c) => Number(c.totalVolume) || 0,
+  marketcap: (c) => Number(c.marketCap) || 0,
+  currentprice: (c) => Number(c.currentPrice) || 0,
+  price: (c) => Number(c.currentPrice) || 0,
+}
+
 // Inject safe defaults so feature values are not silently ignored by the API.
 // Mutates `settings` in place; returns human-readable notes for what was injected.
-function applySettingsSafeDefaults(
+export function applySettingsSafeDefaults(
   settings: Record<string, any>,
   kind: 'deal' | 'bot',
 ): string[] {
@@ -2630,17 +2645,7 @@ async function handleToolCall(
         return JSON.stringify(res, null, 2)
       }
 
-      const SORT_KEYS: Record<string, (c: any) => number> = {
-        volatility: (c) => Math.abs(Number(c.priceChangePercentage24h) || 0),
-        pricechangepercentage24h: (c) => Number(c.priceChangePercentage24h) || 0,
-        pricechange: (c) => Number(c.priceChangePercentage24h) || 0,
-        change: (c) => Number(c.priceChangePercentage24h) || 0,
-        totalvolume: (c) => Number(c.totalVolume) || 0,
-        volume: (c) => Number(c.totalVolume) || 0,
-        marketcap: (c) => Number(c.marketCap) || 0,
-        currentprice: (c) => Number(c.currentPrice) || 0,
-        price: (c) => Number(c.currentPrice) || 0,
-      }
+      const SORT_KEYS = SCREENER_SORT_KEYS
       const keyFn = SORT_KEYS[String(args.sort).toLowerCase()]
       if (!keyFn) {
         throw new Error(

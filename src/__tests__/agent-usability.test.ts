@@ -1,15 +1,23 @@
 /**
- * Agent usability regression tests.
+ * Agent usability regression tests — v3 tool surface (17 consolidated tools).
  *
- * These tests verify that tool descriptions, input schemas, and error messages
- * remain sufficient for an AI agent to complete full workflows without consulting
- * external API docs. Run after any edit to server.ts to catch regressions.
+ * These tests verify the EXPORTED, offline-testable behavior of server.ts:
+ *   - validateToolArgs discriminator + required-field + boolean-gate enforcement
+ *   - validateBacktestPayloadShape nesting checks
+ *   - applySettingsSafeDefaults (deal close-condition + multiTp/multiSl uuid injection)
+ *   - SCREENER_SORT_KEYS pure sort-key resolution
+ *   - WORKFLOW_RESOURCE_TEXT / tool descriptions stay sufficient for an agent
+ *
+ * All tests are OFFLINE — pure logic, no live API calls.
+ * Run after any edit to server.ts to catch regressions.
  */
 
 import { describe, it, expect } from 'vitest'
 import {
   validateBacktestPayloadShape,
   validateToolArgs,
+  applySettingsSafeDefaults,
+  SCREENER_SORT_KEYS,
   backtestPayloadParam,
   WORKFLOW_RESOURCE_TEXT,
   WORKFLOW_RESOURCE_URI,
@@ -24,29 +32,585 @@ function findTool(name: string) {
   return t
 }
 
+// ── v3 tool surface ───────────────────────────────────────────────────────────
+
+const V3_TOOLS = [
+  'list_bots',
+  'get_bot',
+  'create_bot',
+  'update_bot',
+  'clone_bot',
+  'manage_bot',
+  'list_deals',
+  'get_deal',
+  'create_deal',
+  'update_deal',
+  'manage_deal',
+  'run_backtest',
+  'backtest_info',
+  'discover',
+  'get_account',
+  'manage_global_variable',
+  'get_screener',
+]
+
+describe('v3 consolidated tool surface', () => {
+  it('exposes exactly the 17 v3 tools', () => {
+    const names = tools.map((t) => t.name).sort()
+    expect(names).toEqual([...V3_TOOLS].sort())
+  })
+
+  it.each(V3_TOOLS)('tool "%s" has a name, description and inputSchema', (name) => {
+    const t = findTool(name)
+    expect(typeof t.description).toBe('string')
+    expect((t.description as string).length).toBeGreaterThan(0)
+    expect(t.inputSchema).toBeDefined()
+    expect((t.inputSchema as any).type).toBe('object')
+  })
+
+  it('does NOT expose any pre-v3.0.0 tool', () => {
+    const removed = [
+      'stop_bot',
+      'closeGridType',
+      'get_dca_bots',
+      'update_dca_bot',
+      'update_combo_bot',
+      'update_dca_deal',
+      'close_deal',
+      'request_backtest',
+      'request_backtest_sync',
+      'build_backtest_payload_template',
+      'get_user_exchanges',
+      'get_discovery_bot',
+    ]
+    const names = new Set(tools.map((t) => t.name))
+    for (const r of removed) expect(names.has(r)).toBe(false)
+  })
+})
+
+// ── Discriminator validation ──────────────────────────────────────────────────
+
+describe('validateToolArgs — botType discriminator', () => {
+  it('list_bots / get_bot require botType', () => {
+    expect(() => validateToolArgs('list_bots', {})).toThrow(/botType.*required/i)
+    expect(() => validateToolArgs('get_bot', { botId: 'x' })).toThrow(
+      /botType.*required/i,
+    )
+  })
+
+  it('rejects an invalid botType', () => {
+    expect(() => validateToolArgs('list_bots', { botType: 'futures' })).toThrow(
+      /Invalid botType/i,
+    )
+  })
+
+  it('create_bot / update_bot / clone_bot require a valid botType', () => {
+    for (const name of ['create_bot', 'update_bot', 'clone_bot']) {
+      expect(() => validateToolArgs(name, {})).toThrow(/botType.*required/i)
+    }
+  })
+
+  it('accepts dca/combo/grid for read tools', () => {
+    for (const bt of ['dca', 'combo', 'grid']) {
+      expect(() => validateToolArgs('list_bots', { botType: bt })).not.toThrow()
+    }
+  })
+})
+
+describe('validateToolArgs — dealType discriminator', () => {
+  it('list_deals / get_deal / update_deal require dealType', () => {
+    expect(() => validateToolArgs('list_deals', {})).toThrow(
+      /dealType.*required/i,
+    )
+    expect(() => validateToolArgs('get_deal', { dealId: 'x' })).toThrow(
+      /dealType.*required/i,
+    )
+  })
+
+  it('rejects an invalid dealType', () => {
+    expect(() =>
+      validateToolArgs('list_deals', { dealType: 'spot' }),
+    ).toThrow(/Invalid dealType/i)
+  })
+
+  it('accepts dca/combo/terminal', () => {
+    for (const dt of ['dca', 'combo', 'terminal']) {
+      expect(() =>
+        validateToolArgs('list_deals', { dealType: dt }),
+      ).not.toThrow()
+    }
+  })
+})
+
+describe('validateToolArgs — required IDs', () => {
+  it('get_bot / update_bot / clone_bot require botId', () => {
+    expect(() =>
+      validateToolArgs('get_bot', { botType: 'dca' }),
+    ).toThrow(/botId.*required/i)
+    expect(() =>
+      validateToolArgs('clone_bot', { botType: 'dca' }),
+    ).toThrow(/botId.*required/i)
+  })
+
+  it('get_deal / update_deal require dealId', () => {
+    expect(() =>
+      validateToolArgs('get_deal', { dealType: 'dca' }),
+    ).toThrow(/dealId.*required/i)
+  })
+})
+
+describe('validateToolArgs — get_account info discriminator', () => {
+  it('requires info', () => {
+    expect(() => validateToolArgs('get_account', {})).toThrow(
+      /info.*required/i,
+    )
+  })
+
+  it('rejects an invalid info value', () => {
+    expect(() =>
+      validateToolArgs('get_account', { info: 'positions' }),
+    ).toThrow(/Invalid info/i)
+  })
+
+  it('accepts balances/exchanges/globalVariables/supportedExchanges', () => {
+    for (const info of [
+      'balances',
+      'exchanges',
+      'globalVariables',
+      'supportedExchanges',
+    ]) {
+      expect(() => validateToolArgs('get_account', { info })).not.toThrow()
+    }
+  })
+})
+
+// ── update_bot: grid rejection + empty settings ───────────────────────────────
+
+describe('validateToolArgs — update_bot', () => {
+  it('rejects grid bots (no update endpoint)', () => {
+    expect(() =>
+      validateToolArgs('update_bot', {
+        botType: 'grid',
+        botId: 'abc',
+        settings: { tpPerc: '1' },
+      }),
+    ).toThrow(/Grid bots do not have an update endpoint/i)
+  })
+
+  it('rejects missing/empty settings', () => {
+    expect(() =>
+      validateToolArgs('update_bot', { botType: 'dca', botId: 'abc' }),
+    ).toThrow(/settings.*non-empty/i)
+    expect(() =>
+      validateToolArgs('update_bot', {
+        botType: 'dca',
+        botId: 'abc',
+        settings: {},
+      }),
+    ).toThrow(/settings.*non-empty/i)
+  })
+
+  it('accepts a non-empty, gate-consistent settings object', () => {
+    expect(() =>
+      validateToolArgs('update_bot', {
+        botType: 'dca',
+        botId: 'abc',
+        settings: { name: 'renamed' },
+      }),
+    ).not.toThrow()
+  })
+})
+
+describe('validateToolArgs — update_deal empty settings', () => {
+  it('rejects missing/empty settings', () => {
+    expect(() =>
+      validateToolArgs('update_deal', { dealType: 'dca', dealId: 'abc' }),
+    ).toThrow(/settings.*non-empty/i)
+  })
+})
+
+// ── Boolean gate enforcement ──────────────────────────────────────────────────
+
+// Both update_bot and update_deal run the same gate logic. Provide the right
+// discriminator + id for each.
+const GATE_CASES = [
+  { tool: 'update_bot', extra: { botType: 'dca', botId: 'abc' } },
+  { tool: 'update_deal', extra: { dealType: 'dca', dealId: 'abc' } },
+] as const
+
+describe.each(GATE_CASES)('boolean gates — $tool', ({ tool, extra }) => {
+  const call = (settings: Record<string, any>) =>
+    validateToolArgs(tool, { ...extra, settings })
+
+  it('useDca gates ordersCount', () => {
+    expect(() => call({ ordersCount: 3 })).toThrow(/useDca/)
+  })
+
+  it('useDca gates orderSize', () => {
+    expect(() => call({ orderSize: '200' })).toThrow(/useDca/)
+  })
+
+  it('useTp gates tpPerc', () => {
+    expect(() => call({ tpPerc: '2.5' })).toThrow(/useTp/)
+  })
+
+  it('useSl gates slPerc', () => {
+    expect(() => call({ slPerc: '-10' })).toThrow(/useSl/)
+  })
+
+  it('moveSL gates moveSLTrigger', () => {
+    expect(() => call({ moveSLTrigger: '1.0' })).toThrow(/moveSL/)
+  })
+
+  it('moveSL gates moveSLForAll', () => {
+    expect(() => call({ moveSLForAll: true })).toThrow(/moveSL/)
+  })
+
+  it('closeByTimer gates closeByTimerValue', () => {
+    expect(() => call({ closeByTimerValue: 60 })).toThrow(/closeByTimer/)
+  })
+
+  it('useMultiTp gates multiTp (within useTp)', () => {
+    expect(() =>
+      call({ useTp: true, multiTp: [{ perc: '1' }] }),
+    ).toThrow(/useMultiTp/)
+  })
+
+  it('useMultiSl gates multiSl (within useSl)', () => {
+    expect(() =>
+      call({ useSl: true, multiSl: [{ perc: '5' }] }),
+    ).toThrow(/useMultiSl/)
+  })
+
+  it('trailingTp gates trailingTpPerc (within useTp)', () => {
+    expect(() =>
+      call({ useTp: true, trailingTpPerc: '0.5' }),
+    ).toThrow(/trailingTp/)
+  })
+
+  // Happy paths — gate set in the same call.
+  it('passes when useDca:true accompanies ordersCount+orderSize', () => {
+    expect(() =>
+      call({ useDca: true, ordersCount: 1, orderSize: '200' }),
+    ).not.toThrow()
+  })
+
+  it('passes when useTp:true accompanies tpPerc', () => {
+    expect(() => call({ useTp: true, tpPerc: '2' })).not.toThrow()
+  })
+
+  it('passes when useSl:true accompanies slPerc', () => {
+    expect(() => call({ useSl: true, slPerc: '-5' })).not.toThrow()
+  })
+
+  it('passes when moveSL:true accompanies its value fields', () => {
+    expect(() =>
+      call({
+        moveSL: true,
+        moveSLTrigger: '1.0',
+        moveSLValue: '0.5',
+        moveSLForAll: true,
+      }),
+    ).not.toThrow()
+  })
+
+  it('passes when closeByTimer:true accompanies its value fields', () => {
+    expect(() =>
+      call({
+        closeByTimer: true,
+        closeByTimerValue: 60,
+        closeByTimerUnits: 'minutes',
+      }),
+    ).not.toThrow()
+  })
+
+  it('passes when trailingTp:true accompanies trailingTpPerc (within useTp)', () => {
+    expect(() =>
+      call({ useTp: true, trailingTp: true, trailingTpPerc: '0.5' }),
+    ).not.toThrow()
+  })
+})
+
+// ── manage_bot validation ─────────────────────────────────────────────────────
+
+describe('validateToolArgs — manage_bot', () => {
+  it('requires action, botId, botType', () => {
+    expect(() => validateToolArgs('manage_bot', {})).toThrow(
+      /action.*required/i,
+    )
+    expect(() =>
+      validateToolArgs('manage_bot', { action: 'start' }),
+    ).toThrow(/botId.*required/i)
+    expect(() =>
+      validateToolArgs('manage_bot', { action: 'start', botId: 'abc' }),
+    ).toThrow(/botType.*required/i)
+  })
+
+  it('stop (dca/combo) requires a valid closeType', () => {
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'stop',
+        botId: 'abc',
+        botType: 'dca',
+      }),
+    ).toThrow(/closeType.*required/i)
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'stop',
+        botId: 'abc',
+        botType: 'dca',
+        closeType: 'immediately',
+      }),
+    ).toThrow(/closeType.*must be one of/i)
+  })
+
+  it('stop (grid) requires a valid closeGridType', () => {
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'stop',
+        botId: 'abc',
+        botType: 'grid',
+      }),
+    ).toThrow(/closeGridType.*required/i)
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'stop',
+        botId: 'abc',
+        botType: 'grid',
+        closeGridType: 'leave',
+      }),
+    ).toThrow(/closeGridType.*must be one of/i)
+  })
+
+  it('stop passes for dca with closeType=closeByMarket', () => {
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'stop',
+        botId: 'abc',
+        botType: 'dca',
+        closeType: 'closeByMarket',
+      }),
+    ).not.toThrow()
+  })
+
+  it('stop passes for grid with closeGridType=closeByMarket', () => {
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'stop',
+        botId: 'abc',
+        botType: 'grid',
+        closeGridType: 'closeByMarket',
+      }),
+    ).not.toThrow()
+  })
+
+  it('changePairs is dca-only and requires a non-empty pair array', () => {
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'changePairs',
+        botId: 'abc',
+        botType: 'combo',
+        pair: ['BTC_USDT'],
+      }),
+    ).toThrow(/only supported for dca/i)
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'changePairs',
+        botId: 'abc',
+        botType: 'dca',
+        pair: [],
+      }),
+    ).toThrow(/pair.*non-empty array/i)
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'changePairs',
+        botId: 'abc',
+        botType: 'dca',
+        pair: ['BTC_USDT'],
+      }),
+    ).not.toThrow()
+  })
+
+  it('start passes (no closeType needed)', () => {
+    expect(() =>
+      validateToolArgs('manage_bot', {
+        action: 'start',
+        botId: 'abc',
+        botType: 'dca',
+      }),
+    ).not.toThrow()
+  })
+})
+
+// ── manage_deal validation ────────────────────────────────────────────────────
+
+describe('validateToolArgs — manage_deal', () => {
+  it('requires action, dealId, dealType', () => {
+    expect(() => validateToolArgs('manage_deal', {})).toThrow(
+      /action.*required/i,
+    )
+    expect(() =>
+      validateToolArgs('manage_deal', { action: 'close' }),
+    ).toThrow(/dealId.*required/i)
+    expect(() =>
+      validateToolArgs('manage_deal', { action: 'close', dealId: 'abc' }),
+    ).toThrow(/dealType.*required/i)
+  })
+
+  it('close requires closeType', () => {
+    expect(() =>
+      validateToolArgs('manage_deal', {
+        action: 'close',
+        dealId: 'abc',
+        dealType: 'dca',
+      }),
+    ).toThrow(/closeType.*required/i)
+  })
+
+  it('addFunds requires qty, and asset when type=fixed', () => {
+    expect(() =>
+      validateToolArgs('manage_deal', {
+        action: 'addFunds',
+        dealId: 'abc',
+        dealType: 'dca',
+      }),
+    ).toThrow(/qty.*required/i)
+    expect(() =>
+      validateToolArgs('manage_deal', {
+        action: 'addFunds',
+        dealId: 'abc',
+        dealType: 'dca',
+        qty: '10',
+        type: 'fixed',
+      }),
+    ).toThrow(/asset.*required/i)
+    expect(() =>
+      validateToolArgs('manage_deal', {
+        action: 'addFunds',
+        dealId: 'abc',
+        dealType: 'dca',
+        qty: '10',
+        type: 'fixed',
+        asset: 'USDT',
+      }),
+    ).not.toThrow()
+  })
+
+  it('close passes with closeType present', () => {
+    expect(() =>
+      validateToolArgs('manage_deal', {
+        action: 'close',
+        dealId: 'abc',
+        dealType: 'dca',
+        closeType: 'closeByMarket',
+      }),
+    ).not.toThrow()
+  })
+})
+
+// ── create_deal validation ────────────────────────────────────────────────────
+
+describe('validateToolArgs — create_deal', () => {
+  it('requires dealType', () => {
+    expect(() => validateToolArgs('create_deal', {})).toThrow(
+      /dealType.*required/i,
+    )
+  })
+
+  it('terminal deals require exchangeUUID and terminalDealType', () => {
+    expect(() =>
+      validateToolArgs('create_deal', { dealType: 'terminal' }),
+    ).toThrow(/exchangeUUID.*required/i)
+    expect(() =>
+      validateToolArgs('create_deal', {
+        dealType: 'terminal',
+        exchangeUUID: 'uuid-x',
+      }),
+    ).toThrow(/terminalDealType.*required/i)
+  })
+
+  it('dca/combo deals require botId', () => {
+    expect(() =>
+      validateToolArgs('create_deal', { dealType: 'dca' }),
+    ).toThrow(/botId.*required/i)
+    expect(() =>
+      validateToolArgs('create_deal', { dealType: 'dca', botId: 'abc' }),
+    ).not.toThrow()
+  })
+})
+
+// ── run_backtest validation ───────────────────────────────────────────────────
+
+describe('validateToolArgs — run_backtest', () => {
+  const goodPayload = {
+    payload: {
+      data: {
+        exchange: 'binance',
+        exchangeUUID: 'uuid-x',
+        settings: { pair: ['BTC_USDT'], strategy: 'LONG' },
+      },
+    },
+  }
+
+  it('requires a valid mode', () => {
+    expect(() =>
+      validateToolArgs('run_backtest', { botType: 'dca', ...goodPayload }),
+    ).toThrow(/mode.*required/i)
+    expect(() =>
+      validateToolArgs('run_backtest', {
+        mode: 'run',
+        botType: 'dca',
+        ...goodPayload,
+      }),
+    ).toThrow(/Invalid mode/i)
+  })
+
+  it('requires botType', () => {
+    expect(() =>
+      validateToolArgs('run_backtest', { mode: 'validate', ...goodPayload }),
+    ).toThrow(/botType.*required/i)
+  })
+
+  it('validates the payload shape', () => {
+    expect(() =>
+      validateToolArgs('run_backtest', {
+        mode: 'validate',
+        botType: 'dca',
+        payload: {},
+      }),
+    ).toThrow(/payload/)
+  })
+
+  it('passes for a well-formed request', () => {
+    for (const mode of ['validate', 'estimate', 'request', 'requestSync']) {
+      expect(() =>
+        validateToolArgs('run_backtest', {
+          mode,
+          botType: 'dca',
+          ...goodPayload,
+        }),
+      ).not.toThrow()
+    }
+  })
+})
+
 // ── validateBacktestPayloadShape ─────────────────────────────────────────────
 
 describe('validateBacktestPayloadShape', () => {
   it('throws when payload is missing, with Recovery hint', () => {
     expect(() => validateBacktestPayloadShape({})).toThrow(/payload/)
     expect(() => validateBacktestPayloadShape({})).toThrow(
-      /build_backtest_payload_template/,
-    )
-    expect(() => validateBacktestPayloadShape({})).toThrow(
       /"missingField":"payload"/,
     )
   })
 
-  it('throws when payload.data is missing, with Recovery hint', () => {
-    // payload must be non-empty (hasKeys check) but missing the 'data' key
-    const args = { payload: { _placeholder: true } }
-    expect(() => validateBacktestPayloadShape(args)).toThrow(/payload\.data/)
-    expect(() => validateBacktestPayloadShape(args)).toThrow(
-      /"missingObject":"payload\.data"/,
-    )
+  it('throws when payload.data is missing', () => {
+    expect(() =>
+      validateBacktestPayloadShape({ payload: { _placeholder: true } }),
+    ).toThrow(/"missingObject":"payload\.data"/)
   })
 
-  it('throws when exchange is missing, with suggestedTools hint', () => {
+  it('throws when exchange is missing, suggesting discover/get_account', () => {
     expect(() =>
       validateBacktestPayloadShape({
         payload: { data: { exchangeUUID: 'x', settings: { a: 1 } } },
@@ -56,23 +620,18 @@ describe('validateBacktestPayloadShape', () => {
       validateBacktestPayloadShape({
         payload: { data: { exchangeUUID: 'x', settings: { a: 1 } } },
       }),
-    ).toThrow(/get_supported_exchanges|get_user_exchanges/)
+    ).toThrow(/discover|get_account/)
   })
 
-  it('throws when exchangeUUID is missing, with suggestedTools hint', () => {
+  it('throws when exchangeUUID is missing', () => {
     expect(() =>
       validateBacktestPayloadShape({
         payload: { data: { exchange: 'binance', settings: { a: 1 } } },
       }),
     ).toThrow(/"missingField":"payload\.data\.exchangeUUID"/)
-    expect(() =>
-      validateBacktestPayloadShape({
-        payload: { data: { exchange: 'binance', settings: { a: 1 } } },
-      }),
-    ).toThrow(/get_user_exchanges/)
   })
 
-  it('throws when settings is missing, with suggestedTools hint', () => {
+  it('throws when settings is empty', () => {
     expect(() =>
       validateBacktestPayloadShape({
         payload: {
@@ -80,13 +639,6 @@ describe('validateBacktestPayloadShape', () => {
         },
       }),
     ).toThrow(/"missingObject":"payload\.data\.settings"/)
-    expect(() =>
-      validateBacktestPayloadShape({
-        payload: {
-          data: { exchange: 'binance', exchangeUUID: 'uuid-x', settings: {} },
-        },
-      }),
-    ).toThrow(/get_discovery_bot|build_backtest_payload_template/)
   })
 
   it('does not throw for a valid payload shape', () => {
@@ -109,11 +661,8 @@ describe('validateBacktestPayloadShape', () => {
 describe('backtestPayloadParam — nested JSON Schema', () => {
   const param = backtestPayloadParam.payload as any
 
-  it('payload is an object type', () => {
+  it('payload is an object that requires data', () => {
     expect(param.type).toBe('object')
-  })
-
-  it('payload requires data', () => {
     expect(param.required).toContain('data')
   })
 
@@ -124,118 +673,133 @@ describe('backtestPayloadParam — nested JSON Schema', () => {
     expect(data.required).toContain('settings')
   })
 
-  it('payload.data.exchange describes get_supported_exchanges / get_user_exchanges', () => {
+  it('payload.data.exchange description points at discover / get_account', () => {
     const desc: string = param.properties.data.properties.exchange.description
-    expect(desc).toMatch(/get_supported_exchanges|get_user_exchanges/)
+    expect(desc).toMatch(/discover|get_account/)
   })
 
-  it('payload.data.interval has enum values', () => {
+  it('payload.data.interval enumerates intervals', () => {
     const interval = param.properties.data.properties.interval
     expect(interval.enum).toContain('1h')
     expect(interval.enum).toContain('1d')
   })
 })
 
-// ── Backtest tool descriptions ────────────────────────────────────────────────
+// ── applySettingsSafeDefaults ─────────────────────────────────────────────────
 
-const BACKTEST_TOOLS = [
-  'estimate_backtest_cost',
-  'request_backtest',
-  'request_backtest_sync',
-  'validate_backtest_payload',
-]
-
-describe.each(BACKTEST_TOOLS)('tool "%s" description', (toolName) => {
-  it('mentions DCA example with BTC_USDT pair array', () => {
-    const desc = findTool(toolName).description as string
-    expect(desc).toContain('"BTC_USDT"')
-    expect(desc).toContain('"dca"')
+describe('applySettingsSafeDefaults — deal close condition', () => {
+  it('injects dealCloseCondition="tp" when TP fields + useTp present and condition absent', () => {
+    const settings: Record<string, any> = { useTp: true, tpPerc: '2' }
+    const notes = applySettingsSafeDefaults(settings, 'deal')
+    expect(settings.dealCloseCondition).toBe('tp')
+    expect(notes.some((n) => /dealCloseCondition="tp"/.test(n))).toBe(true)
   })
 
-  it('mentions Combo minimal settings', () => {
-    const desc = findTool(toolName).description as string
-    expect(desc.toLowerCase()).toContain('combo')
-    expect(desc).toContain('gridLevel')
+  it('does NOT override an explicit dealCloseCondition', () => {
+    const settings: Record<string, any> = {
+      useTp: true,
+      tpPerc: '2',
+      dealCloseCondition: 'manual',
+    }
+    applySettingsSafeDefaults(settings, 'deal')
+    expect(settings.dealCloseCondition).toBe('manual')
   })
 
-  it('mentions Grid minimal settings and notes pair is a single string', () => {
-    const desc = findTool(toolName).description as string
-    expect(desc.toLowerCase()).toContain('grid')
-    expect(desc).toContain('topPrice')
-    expect(desc).toMatch(/grid pair is a single string/i)
+  it('does NOT inject when useTp is not true', () => {
+    const settings: Record<string, any> = { tpPerc: '2' }
+    applySettingsSafeDefaults(settings, 'deal')
+    expect('dealCloseCondition' in settings).toBe(false)
   })
 
-  it('references build_backtest_payload_template', () => {
-    const desc = findTool(toolName).description as string
-    expect(desc).toContain('build_backtest_payload_template')
-  })
-
-  it('uses nested backtestPayloadParam schema (not flat)', () => {
-    const schema = findTool(toolName).inputSchema as any
-    const payload = schema.properties?.payload
-    expect(payload).toBeDefined()
-    expect(payload.properties?.data).toBeDefined()
-    expect(payload.properties.data.required).toContain('settings')
+  it('does NOT inject for kind="bot" (a bot may close by techInd/webhook)', () => {
+    const settings: Record<string, any> = { useTp: true, tpPerc: '2' }
+    applySettingsSafeDefaults(settings, 'bot')
+    expect('dealCloseCondition' in settings).toBe(false)
   })
 })
 
-// ── get_user_exchanges ────────────────────────────────────────────────────────
-
-describe('get_user_exchanges description', () => {
-  it('mentions exchangeUUID', () => {
-    const desc = findTool('get_user_exchanges').description as string
-    expect(desc).toContain('exchangeUUID')
+describe('applySettingsSafeDefaults — multiTp/multiSl uuid generation', () => {
+  it('auto-generates a uuid for multiTp items missing one', () => {
+    const settings: Record<string, any> = {
+      multiTp: [{ target: '1', amount: '50' }, { target: '2', amount: '50' }],
+    }
+    const notes = applySettingsSafeDefaults(settings, 'deal')
+    for (const item of settings.multiTp) {
+      expect(typeof item.uuid).toBe('string')
+      expect(item.uuid.length).toBeGreaterThan(0)
+    }
+    // Each generated uuid is unique.
+    expect(settings.multiTp[0].uuid).not.toBe(settings.multiTp[1].uuid)
+    expect(notes.some((n) => /multiTp/.test(n))).toBe(true)
   })
 
-  it('tells agent to call it first for bot creation / backtest', () => {
-    const desc = findTool('get_user_exchanges').description as string
-    expect(desc).toMatch(/bot creation|create bot|workflow|first/i)
-  })
-})
-
-// ── get_discovery_bot ─────────────────────────────────────────────────────────
-
-describe('get_discovery_bot description', () => {
-  it('documents pair underscore format', () => {
-    const desc = findTool('get_discovery_bot').description as string
-    expect(desc).toContain('BTC_USDT')
+  it('preserves an existing uuid', () => {
+    const settings: Record<string, any> = {
+      multiSl: [{ target: '1', amount: '100', uuid: 'keep-me' }],
+    }
+    applySettingsSafeDefaults(settings, 'bot')
+    expect(settings.multiSl[0].uuid).toBe('keep-me')
   })
 
-  it('distinguishes array (DCA/Combo) vs single string (Grid) for pair', () => {
-    const desc = findTool('get_discovery_bot').description as string
-    expect(desc).toMatch(/array|DCA|Combo/i)
-    expect(desc).toMatch(/Grid|single string/i)
-  })
-})
-
-// ── build_backtest_payload_template ───────────────────────────────────────────
-
-describe('build_backtest_payload_template tool', () => {
-  it('exists', () => {
-    expect(() => findTool('build_backtest_payload_template')).not.toThrow()
+  it('ignores non-array multiTp/multiSl', () => {
+    const settings: Record<string, any> = { multiTp: 'not-an-array' }
+    expect(() => applySettingsSafeDefaults(settings, 'deal')).not.toThrow()
   })
 
-  it('accepts botType and optional exchange params', () => {
-    const schema = findTool('build_backtest_payload_template')
-      .inputSchema as any
-    expect(schema.properties).toHaveProperty('botType')
-    expect(schema.properties).toHaveProperty('exchange')
-    expect(schema.required).toContain('botType')
-    expect(schema.required).not.toContain('exchange')
+  it('returns no notes for empty settings', () => {
+    expect(applySettingsSafeDefaults({}, 'deal')).toEqual([])
   })
 })
 
-// ── get_backtest_operation_schema ─────────────────────────────────────────────
+// ── get_screener client-side sort keys ────────────────────────────────────────
 
-describe('get_backtest_operation_schema tool', () => {
-  it('exists', () => {
-    expect(() => findTool('get_backtest_operation_schema')).not.toThrow()
+describe('SCREENER_SORT_KEYS — pure sort key resolution', () => {
+  it('volatility = absolute 24h percentage change', () => {
+    const keyFn = SCREENER_SORT_KEYS['volatility']
+    expect(keyFn({ priceChangePercentage24h: -7.5 })).toBe(7.5)
+    expect(keyFn({ priceChangePercentage24h: 4.2 })).toBe(4.2)
+    expect(keyFn({ priceChangePercentage24h: '0' })).toBe(0)
   })
 
-  it('accepts botType param', () => {
-    const schema = findTool('get_backtest_operation_schema').inputSchema as any
-    expect(schema.properties).toHaveProperty('botType')
-    expect(schema.required).toContain('botType')
+  it('priceChange/change keep sign (not absolute)', () => {
+    expect(SCREENER_SORT_KEYS['change']({ priceChangePercentage24h: -7.5 })).toBe(
+      -7.5,
+    )
+    expect(
+      SCREENER_SORT_KEYS['pricechange']({ priceChangePercentage24h: -3 }),
+    ).toBe(-3)
+  })
+
+  it('volume / marketCap / price map to numeric fields', () => {
+    expect(SCREENER_SORT_KEYS['volume']({ totalVolume: '1000' })).toBe(1000)
+    expect(SCREENER_SORT_KEYS['marketcap']({ marketCap: 5e9 })).toBe(5e9)
+    expect(SCREENER_SORT_KEYS['price']({ currentPrice: '42.5' })).toBe(42.5)
+  })
+
+  it('coerces missing/NaN values to 0', () => {
+    expect(SCREENER_SORT_KEYS['volatility']({})).toBe(0)
+    expect(SCREENER_SORT_KEYS['volume']({ totalVolume: 'abc' })).toBe(0)
+  })
+
+  it('lookup is case-insensitive (matches handler which lowercases args.sort)', () => {
+    // Handler does SCREENER_SORT_KEYS[String(args.sort).toLowerCase()].
+    expect(SCREENER_SORT_KEYS['VOLATILITY'.toLowerCase()]).toBeDefined()
+    expect(SCREENER_SORT_KEYS['Volume'.toLowerCase()]).toBeDefined()
+  })
+
+  it('unsupported sort key resolves to undefined (handler throws on this)', () => {
+    expect(SCREENER_SORT_KEYS['nonsense']).toBeUndefined()
+  })
+
+  it('sorting descending by volatility ranks the most volatile first', () => {
+    const coins = [
+      { symbol: 'A', priceChangePercentage24h: 2 },
+      { symbol: 'B', priceChangePercentage24h: -12 },
+      { symbol: 'C', priceChangePercentage24h: 5 },
+    ]
+    const keyFn = SCREENER_SORT_KEYS['volatility']
+    const sorted = [...coins].sort((a, b) => keyFn(b) - keyFn(a))
+    expect(sorted.map((c) => c.symbol)).toEqual(['B', 'C', 'A'])
   })
 })
 
@@ -246,343 +810,59 @@ describe('WORKFLOW_RESOURCE_TEXT', () => {
     expect(WORKFLOW_RESOURCE_URI).toBe('gainium://workflow')
   })
 
-  it('contains the three-layer model explanation', () => {
+  it('explains the three-layer model', () => {
     expect(WORKFLOW_RESOURCE_TEXT).toContain('Layer 1')
     expect(WORKFLOW_RESOURCE_TEXT).toContain('Layer 2')
     expect(WORKFLOW_RESOURCE_TEXT).toContain('Layer 3')
   })
 
-  it('documents underscore pair format', () => {
+  it('documents the underscore pair format with array vs single-string distinction', () => {
     expect(WORKFLOW_RESOURCE_TEXT).toContain('BTC_USDT')
     expect(WORKFLOW_RESOURCE_TEXT).toMatch(/underscore/i)
+    expect(WORKFLOW_RESOURCE_TEXT).toMatch(/array/i)
+    expect(WORKFLOW_RESOURCE_TEXT).toMatch(/grid.*single string|single string.*grid/i)
   })
 
-  it('documents array vs single string distinction for pair', () => {
-    expect(WORKFLOW_RESOURCE_TEXT).toMatch(/DCA.*array|array.*DCA/i)
-    expect(WORKFLOW_RESOURCE_TEXT).toMatch(
-      /Grid.*single string|single string.*Grid/i,
-    )
+  it('documents the v3 backtest flow via run_backtest modes', () => {
+    expect(WORKFLOW_RESOURCE_TEXT).toContain('get_account')
+    expect(WORKFLOW_RESOURCE_TEXT).toContain('run_backtest')
+    expect(WORKFLOW_RESOURCE_TEXT).toContain('validate')
+    expect(WORKFLOW_RESOURCE_TEXT).toContain('estimate')
+    expect(WORKFLOW_RESOURCE_TEXT).toContain('requestSync')
   })
 
-  it('contains backtest recommended flow with all key steps', () => {
-    expect(WORKFLOW_RESOURCE_TEXT).toContain('get_user_exchanges')
-    expect(WORKFLOW_RESOURCE_TEXT).toContain('build_backtest_payload_template')
-    expect(WORKFLOW_RESOURCE_TEXT).toContain('validate_backtest_payload')
-    expect(WORKFLOW_RESOURCE_TEXT).toContain('estimate_backtest_cost')
-    expect(WORKFLOW_RESOURCE_TEXT).toContain('request_backtest_sync')
-  })
-
-  it('documents boolean gates', () => {
+  it('documents the boolean gates', () => {
     expect(WORKFLOW_RESOURCE_TEXT).toMatch(/boolean gate/i)
     expect(WORKFLOW_RESOURCE_TEXT).toContain('useDca')
     expect(WORKFLOW_RESOURCE_TEXT).toContain('useTp')
     expect(WORKFLOW_RESOURCE_TEXT).toContain('useSl')
     expect(WORKFLOW_RESOURCE_TEXT).toContain('moveSL')
+    expect(WORKFLOW_RESOURCE_TEXT).toContain('closeByTimer')
   })
 
-  it('has DECISION RULE directing agent to stop_bot instead of close_deal loop', () => {
+  it('has a DECISION RULE steering to manage_bot stop instead of a close-deal loop', () => {
     expect(WORKFLOW_RESOURCE_TEXT).toMatch(/DECISION RULE/i)
-    expect(WORKFLOW_RESOURCE_TEXT).toMatch(
-      /do not close deals.*one by one|not.*close.*loop/i,
-    )
-    expect(WORKFLOW_RESOURCE_TEXT).toContain('stop_bot')
+    expect(WORKFLOW_RESOURCE_TEXT).toMatch(/do not close deals one by one/i)
+    expect(WORKFLOW_RESOURCE_TEXT).toContain('manage_bot')
     expect(WORKFLOW_RESOURCE_TEXT).toContain('closeByMarket')
   })
-
-  it('close_deal entry warns against using it to stop a bot', () => {
-    expect(WORKFLOW_RESOURCE_TEXT).toMatch(
-      /close_deal.*only.*single|only.*single.*deal/i,
-    )
-    expect(WORKFLOW_RESOURCE_TEXT).toMatch(
-      /do not.*close_deal.*loop|not.*loop/i,
-    )
-  })
 })
 
-// ── Boolean gate enforcement (validateToolArgs) ───────────────────────────────
+// ── manage_bot tool description (agent guidance) ───────────────────────────────
 
-const UPDATE_TOOLS = [
-  'update_dca_bot',
-  'update_combo_bot',
-  'update_dca_deal',
-  'update_combo_deal',
-  'update_terminal_deal',
-]
+describe('manage_bot tool schema', () => {
+  const tool = () => findTool('manage_bot')
 
-describe.each(UPDATE_TOOLS)('boolean gate enforcement — %s', (toolName) => {
-  const idField = toolName.includes('deal') ? 'dealId' : 'botId'
-  const baseArgs = { [idField]: 'abc123' }
-
-  it('throws when ordersCount is set without useDca', () => {
-    expect(() =>
-      validateToolArgs(toolName, { ...baseArgs, settings: { ordersCount: 3 } }),
-    ).toThrow(/useDca/)
+  it('action enum covers the bot lifecycle including stop and changePairs', () => {
+    const action = (tool().inputSchema as any).properties.action
+    for (const a of ['start', 'stop', 'archive', 'restore', 'changePairs']) {
+      expect(action.enum).toContain(a)
+    }
   })
 
-  it('throws when orderSize is set without useDca', () => {
-    expect(() =>
-      validateToolArgs(toolName, {
-        ...baseArgs,
-        settings: { orderSize: '200' },
-      }),
-    ).toThrow(/useDca/)
-  })
-
-  it('throws when tpPerc is set without useTp', () => {
-    expect(() =>
-      validateToolArgs(toolName, { ...baseArgs, settings: { tpPerc: '2.5' } }),
-    ).toThrow(/useTp/)
-  })
-
-  it('throws when slPerc is set without useSl', () => {
-    expect(() =>
-      validateToolArgs(toolName, { ...baseArgs, settings: { slPerc: '-10' } }),
-    ).toThrow(/useSl/)
-  })
-
-  it('does not throw when useDca:true accompanies ordersCount+orderSize', () => {
-    expect(() =>
-      validateToolArgs(toolName, {
-        ...baseArgs,
-        settings: { useDca: true, ordersCount: 1, orderSize: '200' },
-      }),
-    ).not.toThrow()
-  })
-
-  it('does not throw when useTp:true accompanies tpPerc', () => {
-    expect(() =>
-      validateToolArgs(toolName, {
-        ...baseArgs,
-        settings: { useTp: true, tpPerc: '2' },
-      }),
-    ).not.toThrow()
-  })
-
-  it('does not throw when useSl:true accompanies slPerc', () => {
-    expect(() =>
-      validateToolArgs(toolName, {
-        ...baseArgs,
-        settings: { useSl: true, slPerc: '-5' },
-      }),
-    ).not.toThrow()
-  })
-})
-
-describe('boolean gate enforcement — moveSL / closeByTimer / trailingTpPerc / multiTp / multiSl', () => {
-  it('throws when moveSLTrigger is set without moveSL on update_dca_bot', () => {
-    expect(() =>
-      validateToolArgs('update_dca_bot', {
-        botId: 'abc',
-        settings: { moveSLTrigger: '1.0' },
-      }),
-    ).toThrow(/moveSL/)
-  })
-
-  it('throws when moveSLForAll is set without moveSL', () => {
-    expect(() =>
-      validateToolArgs('update_dca_deal', {
-        dealId: 'abc',
-        settings: { moveSLForAll: true },
-      }),
-    ).toThrow(/moveSL/)
-  })
-
-  it('throws when trailingTpPerc is set without trailingTp', () => {
-    expect(() =>
-      validateToolArgs('update_dca_deal', {
-        dealId: 'abc',
-        settings: { useTp: true, trailingTpPerc: '0.5' },
-      }),
-    ).toThrow(/trailingTp/)
-  })
-
-  it('throws when multiTp is set without useMultiTp', () => {
-    expect(() =>
-      validateToolArgs('update_dca_bot', {
-        botId: 'abc',
-        settings: { useTp: true, multiTp: [{ perc: '1' }] },
-      }),
-    ).toThrow(/useMultiTp/)
-  })
-
-  it('throws when multiSl is set without useMultiSl', () => {
-    expect(() =>
-      validateToolArgs('update_dca_bot', {
-        botId: 'abc',
-        settings: { useSl: true, multiSl: [{ perc: '5' }] },
-      }),
-    ).toThrow(/useMultiSl/)
-  })
-
-  it('throws when closeByTimerValue is set without closeByTimer', () => {
-    expect(() =>
-      validateToolArgs('update_dca_deal', {
-        dealId: 'abc',
-        settings: { closeByTimerValue: 60 },
-      }),
-    ).toThrow(/closeByTimer/)
-  })
-
-  it('does not throw when moveSL:true accompanies moveSLTrigger+moveSLValue+moveSLForAll', () => {
-    expect(() =>
-      validateToolArgs('update_dca_bot', {
-        botId: 'abc',
-        settings: {
-          moveSL: true,
-          moveSLTrigger: '1.0',
-          moveSLValue: '0.5',
-          moveSLForAll: true,
-        },
-      }),
-    ).not.toThrow()
-  })
-
-  it('does not throw when trailingTp:true accompanies trailingTpPerc (within useTp)', () => {
-    expect(() =>
-      validateToolArgs('update_dca_deal', {
-        dealId: 'abc',
-        settings: { useTp: true, trailingTp: true, trailingTpPerc: '0.5' },
-      }),
-    ).not.toThrow()
-  })
-
-  it('does not throw when closeByTimer:true accompanies closeByTimerValue+closeByTimerUnits', () => {
-    expect(() =>
-      validateToolArgs('update_dca_deal', {
-        dealId: 'abc',
-        settings: {
-          closeByTimer: true,
-          closeByTimerValue: 60,
-          closeByTimerUnits: 'minutes',
-        },
-      }),
-    ).not.toThrow()
-  })
-})
-
-describe('close_deal tool description', () => {
-  const tool = tools.find((t) => t.name === 'close_deal')!
-
-  it('warns against using close_deal loop to stop a bot', () => {
-    expect(tool.description).toMatch(/do not.*close_deal.*loop|not.*loop/i)
-  })
-
-  it('directs agent to stop_bot with closeByMarket instead', () => {
-    expect(tool.description).toContain('stop_bot')
-    expect(tool.description).toContain('closeByMarket')
-  })
-})
-
-describe('stop_bot tool schema', () => {
-  const tool = tools.find((t) => t.name === 'stop_bot')!
-
-  it('exists', () => {
-    expect(tool).toBeDefined()
-  })
-
-  it('closeType is in required array', () => {
-    expect(tool.inputSchema.required).toContain('closeType')
-  })
-
-  it('has closeType param with all enum values', () => {
-    const closeType = tool.inputSchema.properties?.closeType as any
-    expect(closeType).toBeDefined()
+  it('closeType enum maps the close-by-market intent to closeByMarket', () => {
+    const closeType = (tool().inputSchema as any).properties.closeType
     expect(closeType.enum).toContain('closeByMarket')
     expect(closeType.enum).toContain('leave')
-    expect(closeType.enum).toContain('closeByLimit')
-    expect(closeType.enum).toContain('cancel')
-  })
-
-  it('has closeGridType param for Grid bots', () => {
-    const closeGridType = tool.inputSchema.properties?.closeGridType as any
-    expect(closeGridType).toBeDefined()
-    expect(closeGridType.enum).toContain('closeByMarket')
-    expect(closeGridType.enum).toContain('cancel')
-  })
-
-  it('has cancelPartiallyFilled boolean param', () => {
-    const param = tool.inputSchema.properties?.cancelPartiallyFilled as any
-    expect(param).toBeDefined()
-    expect(param.type).toBe('boolean')
-  })
-
-  it('description states closeType is REQUIRED', () => {
-    expect(tool.description).toMatch(/closeType.*REQUIRED|REQUIRED.*closeType/i)
-  })
-
-  it('description maps "close by market" intent to closeByMarket', () => {
-    expect(tool.description).toContain('closeByMarket')
-    expect(tool.description).toMatch(
-      /close.*market.*closeType.*closeByMarket|closeType.*closeByMarket/i,
-    )
-  })
-
-  it('description includes concrete example with closeType', () => {
-    expect(tool.description).toContain('"closeType"')
-    expect(tool.description).toContain('"botType"')
-  })
-
-  it('workflow resource mentions closeByMarket for stop_bot', () => {
-    expect(WORKFLOW_RESOURCE_TEXT).toContain('closeByMarket')
-  })
-})
-
-describe('stop_bot validateToolArgs enforcement', () => {
-  it('throws when closeType is missing for dca bot', () => {
-    expect(() =>
-      validateToolArgs('stop_bot', { botId: 'abc', botType: 'dca' }),
-    ).toThrow(/closeType.*required/i)
-  })
-
-  it('throws when closeType is missing for combo bot', () => {
-    expect(() =>
-      validateToolArgs('stop_bot', { botId: 'abc', botType: 'combo' }),
-    ).toThrow(/closeType.*required/i)
-  })
-
-  it('throws when closeType has invalid value', () => {
-    expect(() =>
-      validateToolArgs('stop_bot', {
-        botId: 'abc',
-        botType: 'dca',
-        closeType: 'immediately',
-      }),
-    ).toThrow(/closeType.*must be one of/i)
-  })
-
-  it('throws when closeGridType is missing for grid bot', () => {
-    expect(() =>
-      validateToolArgs('stop_bot', { botId: 'abc', botType: 'grid' }),
-    ).toThrow(/closeGridType.*required/i)
-  })
-
-  it('does not throw for dca bot with closeType=closeByMarket', () => {
-    expect(() =>
-      validateToolArgs('stop_bot', {
-        botId: 'abc',
-        botType: 'dca',
-        closeType: 'closeByMarket',
-      }),
-    ).not.toThrow()
-  })
-
-  it('does not throw for dca bot with closeType=leave', () => {
-    expect(() =>
-      validateToolArgs('stop_bot', {
-        botId: 'abc',
-        botType: 'dca',
-        closeType: 'leave',
-      }),
-    ).not.toThrow()
-  })
-
-  it('does not throw for grid bot with closeGridType=closeByMarket', () => {
-    expect(() =>
-      validateToolArgs('stop_bot', {
-        botId: 'abc',
-        botType: 'grid',
-        closeGridType: 'closeByMarket',
-      }),
-    ).not.toThrow()
   })
 })
