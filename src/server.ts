@@ -1636,7 +1636,8 @@ export const tools: Tool[] = [
         },
         qty: {
           type: 'string',
-          description: 'Quantity to add or reduce',
+          description:
+            'Amount to add/reduce. With type="fixed" it is an amount in the chosen asset denomination; with type="perc" it is a percentage of the position.',
         },
         type: {
           type: 'string',
@@ -1645,7 +1646,9 @@ export const tools: Tool[] = [
         },
         asset: {
           type: 'string',
-          description: 'Asset name (required when type=fixed)',
+          enum: ['base', 'quote'],
+          description:
+            'Denomination for a fixed add/reduce — "quote" (e.g. USDT) or "base" (the coin). Required when type="fixed"; this is NOT a ticker symbol. Ignored when type="perc".',
         },
         symbol: {
           type: 'string',
