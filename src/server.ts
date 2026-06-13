@@ -2091,6 +2091,16 @@ export const tools: Tool[] = [
   },
 ]
 
+// Read-only mode (GAINIUM_READONLY=true): expose and allow ONLY tools annotated
+// readOnlyHint:true. Used for the directory-listed connector, which must not
+// execute financial transactions (Anthropic Software Directory Policy §4A). The
+// full read+write server is unaffected when the flag is off.
+export const READONLY_MODE = process.env.GAINIUM_READONLY === 'true'
+export const exposedTools: Tool[] = READONLY_MODE
+  ? tools.filter((t) => t.annotations?.readOnlyHint === true)
+  : tools
+const READONLY_TOOL_NAMES = new Set(exposedTools.map((t) => t.name))
+
 // ── Tool Handler ────────────────────────────────────────────────────────────
 
 async function handleToolCall(
@@ -2103,6 +2113,12 @@ async function handleToolCall(
     enumerable: false,
     configurable: true,
   })
+  if (READONLY_MODE && !READONLY_TOOL_NAMES.has(name)) {
+    throw new Error(
+      `Tool "${name}" is not available on this read-only Gainium connector. ` +
+        'This connection exposes read-only tools only.',
+    )
+  }
   enforceGuards(args)
   validateToolArgs(name, args)
 
@@ -2933,7 +2949,9 @@ function createMcpServer(): Server {
     { capabilities: { tools: {}, resources: {} } },
   )
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: exposedTools,
+  }))
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
