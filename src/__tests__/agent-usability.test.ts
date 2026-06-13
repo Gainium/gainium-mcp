@@ -52,10 +52,12 @@ const V3_TOOLS = [
   'get_account',
   'manage_global_variable',
   'get_screener',
+  'list_presets',
+  'apply_preset',
 ]
 
 describe('v3 consolidated tool surface', () => {
-  it('exposes exactly the 17 v3 tools', () => {
+  it('exposes exactly the 19 v3 tools', () => {
     const names = tools.map((t) => t.name).sort()
     expect(names).toEqual([...V3_TOOLS].sort())
   })

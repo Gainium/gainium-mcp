@@ -413,6 +413,52 @@ export const SCREENER_SORT_KEYS: Record<string, (c: any) => number> = {
   price: (c) => Number(c.currentPrice) || 0,
 }
 
+// Runtime/computed fields carried in a stored preset's settings blob that the
+// bot-create endpoint rejects as input.
+const PRESET_STRIP_FIELDS = [
+  '_id',
+  'type',
+  'changed',
+  'hodlNextBuy',
+  'hodlAt',
+  'hodlDay',
+  'hodlHourly',
+  'activeOrdersCount',
+  'avgPrice',
+  'baseOrderPrice',
+  'slChangedByUser',
+  'importFrom',
+]
+
+// Quote assets used to split a normalised pair (e.g. "BTCUSDT") back into the
+// underscore input format ("BTC_USDT"). Longest-first so USDT matches before USD.
+const KNOWN_QUOTE_ASSETS = [
+  'USDT',
+  'USDC',
+  'FDUSD',
+  'TUSD',
+  'BUSD',
+  'DAI',
+  'USD',
+  'BTC',
+  'ETH',
+  'BNB',
+  'EUR',
+  'TRY',
+  'BRL',
+]
+
+function toUnderscorePair(pair: unknown, _coin?: string): string | undefined {
+  if (typeof pair !== 'string' || !pair) return undefined
+  const clean = pair.replace(/[-_/]/g, '').toUpperCase()
+  for (const q of KNOWN_QUOTE_ASSETS) {
+    if (clean.length > q.length && clean.endsWith(q)) {
+      return `${clean.slice(0, clean.length - q.length)}_${q}`
+    }
+  }
+  return pair
+}
+
 // Inject safe defaults so feature values are not silently ignored by the API.
 // Mutates `settings` in place; returns human-readable notes for what was injected.
 export function applySettingsSafeDefaults(
@@ -1941,6 +1987,108 @@ export const tools: Tool[] = [
       },
     },
   },
+
+  {
+    name: 'list_presets',
+    annotations: { title: 'List Curated Presets', readOnlyHint: true },
+    description:
+      'List curated bot-strategy presets, ranked by backtested performance. Each coin returns tiers ' +
+      '(short/mid/long) × strategy (long/short) with ROI, drawdown, and a ready-to-use settings blob. ' +
+      'Use apply_preset to create a bot from one, or pass the settings to create_bot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        botType: {
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type to list presets for',
+        },
+        coin: {
+          type: 'string',
+          description:
+            'Filter to a single base asset, e.g. "BTC" (skips the closed-deals floor)',
+        },
+        exchange: {
+          type: 'string',
+          description: 'Canonical exchange, e.g. "binance" (use with coin)',
+        },
+        strategy: {
+          type: 'string',
+          enum: ['long', 'short'],
+          description: 'Filter by direction (optional)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max coins to return (default 10, max 50)',
+        },
+        summary: {
+          type: 'boolean',
+          description:
+            'Omit the per-tier settings blob for a lightweight ranked list (default false)',
+        },
+        includeNoDeals: {
+          type: 'boolean',
+          description:
+            'Include coins with fewer than the minimum closed deals (default false)',
+        },
+      },
+      required: ['botType'],
+    },
+  },
+
+  {
+    name: 'apply_preset',
+    annotations: {
+      title: 'Apply Curated Preset',
+      readOnlyHint: false,
+      destructiveHint: true,
+    },
+    description:
+      'Create a bot from a curated preset in one call: fetches the preset for the given coin/exchange/tier/strategy, ' +
+      'then creates a bot from its settings. Override pair, name, or sizing as needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        botType: {
+          type: 'string',
+          enum: ['dca', 'combo', 'grid'],
+          description: 'Bot type',
+        },
+        coin: { type: 'string', description: 'Base asset, e.g. "BTC"' },
+        exchange: {
+          type: 'string',
+          description: 'Preset exchange, e.g. "binance"',
+        },
+        tier: {
+          type: 'string',
+          enum: ['short', 'mid', 'long'],
+          description: 'Risk tier: short (tight), mid (balanced), long (wide)',
+        },
+        strategy: {
+          type: 'string',
+          enum: ['long', 'short'],
+          description: 'Direction (default "long")',
+        },
+        exchangeUUID: {
+          type: 'string',
+          description:
+            'UUID of YOUR connected exchange to create the bot on (from get_account info:"exchanges")',
+        },
+        ...paperContextParam,
+        pair: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Override the preset pair(s), underscore format e.g. ["BTC_USDT"] (optional)',
+        },
+        name: {
+          type: 'string',
+          description: 'Override the bot name (optional)',
+        },
+      },
+      required: ['botType', 'coin', 'exchange', 'tier', 'exchangeUUID'],
+    },
+  },
 ]
 
 // ── Tool Handler ────────────────────────────────────────────────────────────
@@ -2689,6 +2837,85 @@ async function handleToolCall(
           page,
           note: `Sorted client-side across ${all.length} coins from the first ${maxPages} page(s); the screener API does not sort server-side. Raise maxPages (≤30) to widen the pool.`,
         },
+      }
+      return JSON.stringify(out, null, 2)
+    }
+
+    // ── list_presets ─────────────────────────────────────────────────────
+    case 'list_presets': {
+      const res = await client.request('GET', '/api/curated-presets', {
+        query: {
+          botType: args.botType,
+          coin: args.coin,
+          exchange: args.exchange,
+          strategy: args.strategy,
+          limit: args.limit,
+          summary: args.summary ? '1' : undefined,
+          includeNoDeals: args.includeNoDeals ? '1' : undefined,
+        },
+      })
+      return JSON.stringify(res, null, 2)
+    }
+
+    // ── apply_preset ─────────────────────────────────────────────────────
+    case 'apply_preset': {
+      const botType = args.botType
+      const strategy = isNonEmptyString(args.strategy) ? args.strategy : 'long'
+      // Fetch the full preset (settings blob included when summary is omitted).
+      const presetRes: any = await client.request('GET', '/api/curated-presets', {
+        query: {
+          botType,
+          coin: args.coin,
+          exchange: args.exchange,
+        },
+      })
+      const coinRow = Array.isArray(presetRes?.data) ? presetRes.data[0] : null
+      if (!coinRow) {
+        throw new Error(
+          `No preset found for ${args.coin} on ${args.exchange} (botType ${botType}).`,
+        )
+      }
+      const match = (coinRow.tiers || []).find(
+        (t: any) => t.tier === args.tier && t.strategy === strategy,
+      )
+      if (!match || !match.settings) {
+        const available = (coinRow.tiers || [])
+          .map((t: any) => `${t.tier}/${t.strategy}`)
+          .join(', ')
+        throw new Error(
+          `No "${args.tier}/${strategy}" tier with settings for ${args.coin}. Available: ${available}`,
+        )
+      }
+      // Build the create-bot body from the preset settings + caller overrides.
+      // The preset blob is a stored bot config, so it carries runtime/computed fields
+      // that the create endpoint rejects as input — strip them.
+      const body: Record<string, any> = { ...match.settings }
+      for (const f of PRESET_STRIP_FIELDS) delete body[f]
+      body.exchangeUUID = args.exchangeUUID
+      // Pair: prefer caller override; else normalise the preset's pair (e.g. "BTCUSDT"
+      // or "LAB-USDT") to the underscore input format create_bot expects.
+      const presetPair = toUnderscorePair(coinRow.pair, coinRow.coin)
+      let pair: any = args.pair !== undefined ? args.pair : presetPair
+      if (botType === 'grid') {
+        pair = Array.isArray(pair) ? pair[0] : pair
+      } else if (typeof pair === 'string') {
+        pair = [pair]
+      }
+      body.pair = pair
+      if (isNonEmptyString(args.name)) body.name = args.name
+      const res = await client.request('POST', `/api/v2/bots/${botType}`, {
+        body,
+        headers: paperHeader(args),
+      })
+      const out =
+        res && typeof res === 'object' ? { ...(res as object) } : { data: res }
+      ;(out as any)._appliedPreset = {
+        coin: coinRow.coin,
+        exchange: coinRow.exchange,
+        tier: args.tier,
+        strategy,
+        roi: match.roi,
+        maxDrawDownPerc: match.maxDrawDownPerc,
       }
       return JSON.stringify(out, null, 2)
     }
