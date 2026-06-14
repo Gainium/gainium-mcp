@@ -48,6 +48,7 @@ This local stdio mode uses `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` from the s
 | `GAINIUM_INTROSPECTION_URL` | No | `<issuer>/oauth/introspect` | Token introspection endpoint |
 | `MCP_INTROSPECTION_SECRET` | No | — | Shared secret presented to the introspection endpoint (must match the auth server) |
 | `GAINIUM_MCP_PUBLIC_URL` | No | derived from request | Public base URL used in the protected-resource metadata |
+| `OPENAI_APPS_CHALLENGE_TOKEN` | No | — | When set, served as plain text at `/.well-known/openai-apps-challenge` for OpenAI Apps domain verification |
 
 ## Authentication Modes
 

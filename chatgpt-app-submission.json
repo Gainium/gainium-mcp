@@ -1,0 +1,220 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Gainium",
+    "subtitle": "Read trading data",
+    "description": "Gainium helps users inspect their trading bot workspace from ChatGPT through a read-only connector. Users can list and review bots, deals, account balances, connected exchanges, strategy schemas, market screener data, curated presets, and existing backtest request information without creating bots, starting deals, placing trades, or changing account state.",
+    "category": "FINANCE"
+  },
+  "tools": {
+    "list_bots": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves matching bot records and does not create, update, start, stop, or delete bots.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    },
+    "get_bot": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves details for a selected bot and does not modify bot configuration or lifecycle state.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    },
+    "list_deals": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves matching deal records and does not open, close, fund, or update deals.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    },
+    "get_deal": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves details for a selected deal and does not modify or close the deal.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    },
+    "backtest_info": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only lists existing backtest requests, retrieves an existing request, or returns local schema and template guidance.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    },
+    "discover": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves discovery metadata such as bot schemas, indicator schemas, and supported exchanges.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    },
+    "get_account": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves account information such as balances, connected exchanges, global variables, or supported exchanges.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    },
+    "get_screener": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves cryptocurrency screener data and may sort the returned records locally.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    },
+    "list_presets": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves curated bot-strategy preset data for review and comparison.",
+        "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "List DCA bots with a compact field selection.",
+      "user_prompt": "Show my DCA bots using minimal fields.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_bots",
+      "expected_output": "Returns matching DCA bots with concise identifying details and does not offer to start, stop, create, or update bots.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Inspect one bot by ID.",
+      "user_prompt": "Get details for my DCA bot with ID 65f000000000000000000001.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_bot",
+      "expected_output": "Returns the selected bot details or a clear not-found/API error without changing the bot.",
+      "expected_output_url": null
+    },
+    {
+      "description": "List open deals for a bot.",
+      "user_prompt": "List open DCA deals for bot 65f000000000000000000001.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_deals",
+      "expected_output": "Returns matching open DCA deals for the bot and does not close, fund, or update any deal.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Retrieve balances for a specific asset.",
+      "user_prompt": "What is my USDT balance across connected exchanges?",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_account",
+      "expected_output": "Returns available balance information for USDT from the user's account data without initiating transfers or trades.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Discover valid DCA bot settings.",
+      "user_prompt": "What settings are available for DCA bots?",
+      "file_attachment_urls": null,
+      "tools_triggered": "discover",
+      "expected_output": "Returns DCA bot discovery metadata that helps the user understand available fields and defaults.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Review existing backtest request information.",
+      "user_prompt": "Show my latest DCA backtest requests.",
+      "file_attachment_urls": null,
+      "tools_triggered": "backtest_info",
+      "expected_output": "Returns existing backtest request records or pagination information and does not submit a new backtest.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Find volatile market pairs with the screener.",
+      "user_prompt": "Show the most volatile crypto pairs by 24 hour change.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_screener",
+      "expected_output": "Returns ranked screener results based on market data and explains that the result is informational.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Compare curated presets for one bot type.",
+      "user_prompt": "List curated DCA presets for BTC on Binance.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_presets",
+      "expected_output": "Returns curated preset rows with performance and settings information for review, without applying or creating a bot.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not trigger for requests to place trades.",
+      "user_prompt": "Buy 0.1 BTC with market order right now.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because the read-only connector cannot place trades or submit orders.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for bot creation.",
+      "user_prompt": "Create a new DCA bot for BTC/USDT with 2 percent take profit.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because creating bots is outside the read-only connector's supported workflows.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for closing or funding deals.",
+      "user_prompt": "Close all my open deals by market and add 100 USDT to the losing one first.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because closing deals and adding funds are write actions that the read-only connector does not expose.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for unrelated personal finance advice.",
+      "user_prompt": "Should I refinance my mortgage this month?",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because the request is outside Gainium workspace inspection and market screener workflows.",
+      "expected_output_url": null
+    }
+  ]
+}

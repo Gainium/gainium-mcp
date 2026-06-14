@@ -25,7 +25,7 @@ import { GainiumClient } from './gainium-client.js'
 // ── Environment ──────────────────────────────────────────────────────────────
 
 const SERVER_NAME = 'gainium-mcp'
-const SERVER_VERSION = '3.1.0'
+const SERVER_VERSION = '3.2.0'
 
 const API_KEY = process.env.GAINIUM_API_KEY
 const API_SECRET = process.env.GAINIUM_API_SECRET
@@ -74,6 +74,12 @@ const MCP_PUBLIC_URL =
 const OAUTH_ENABLED = Boolean(
   OAUTH_ISSUER && INTROSPECTION_URL && INTROSPECTION_SECRET,
 )
+// OpenAI Apps domain-verification token. OpenAI's submission flow fetches
+// /.well-known/openai-apps-challenge on the MCP origin and expects the exact
+// challenge token back as the response body. Set via env so the token can be
+// rotated without a code change.
+const OPENAI_APPS_CHALLENGE_TOKEN =
+  process.env.OPENAI_APPS_CHALLENGE_TOKEN?.trim() || undefined
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1260,6 +1266,71 @@ manage_deal(action: "close") is ONLY for closing a single specific deal while le
                Always set the gate when changing feature values.
 `.trim()
 
+// ── Output schemas ──────────────────────────────────────────────────────────
+// The read tools pass the Gainium API response straight through. That response
+// is the envelope `{ status, reason, data, meta? }`, where `data` shape depends
+// on the `fields` projection. Schemas are therefore intentionally permissive
+// (additionalProperties allowed, nothing required) so field selection never
+// produces output that violates the declared schema. They exist to tell models
+// the top-level shape, not to pin every nested field.
+type OutputSchema = Tool['outputSchema']
+
+const META_OUTPUT = {
+  type: 'object',
+  description: 'Pagination / result metadata, present on list-style responses.',
+  properties: {
+    page: { type: 'number' },
+    total: { type: 'number' },
+    count: { type: 'number' },
+    onPage: { type: 'number' },
+    fields: { type: 'array', items: { type: 'string' } },
+  },
+  additionalProperties: true,
+}
+
+function envelopeOutput(data: object, description: string): OutputSchema {
+  return {
+    type: 'object',
+    description,
+    properties: {
+      status: {
+        type: 'string',
+        enum: ['OK', 'NOTOK'],
+        description: 'OK on success, NOTOK on a handled API error.',
+      },
+      reason: {
+        type: ['string', 'null'],
+        description: 'Error reason when status is NOTOK; null otherwise.',
+      },
+      data,
+      meta: META_OUTPUT,
+    },
+    additionalProperties: true,
+  } as OutputSchema
+}
+
+function genericObjectOutput(description: string): OutputSchema {
+  return {
+    type: 'object',
+    description,
+    additionalProperties: true,
+  } as OutputSchema
+}
+
+const arrayData = (description: string) => ({
+  type: 'array',
+  description,
+  items: { type: 'object', additionalProperties: true },
+})
+const objectData = (description: string) => ({
+  type: 'object',
+  description,
+  additionalProperties: true,
+})
+// For payloads that may be an array or an object depending on the request
+// (e.g. discovery / account variants) — leave the type unconstrained.
+const anyData = (description: string) => ({ description })
+
 // ── Tool Definitions ────────────────────────────────────────────────────────
 
 export const tools: Tool[] = [
@@ -1285,6 +1356,10 @@ export const tools: Tool[] = [
       },
       required: ['botType'],
     },
+    outputSchema: envelopeOutput(
+      arrayData('Matching bot records; fields present depend on the `fields` preset.'),
+      'Gainium API envelope with the list of bots in `data`.',
+    ),
   },
 
   {
@@ -1306,6 +1381,10 @@ export const tools: Tool[] = [
       },
       required: ['botType', 'botId'],
     },
+    outputSchema: envelopeOutput(
+      objectData('The bot record; fields present depend on the `fields` preset.'),
+      'Gainium API envelope with the bot in `data`.',
+    ),
   },
 
   {
@@ -1574,6 +1653,10 @@ export const tools: Tool[] = [
       },
       required: ['dealType'],
     },
+    outputSchema: envelopeOutput(
+      arrayData('Matching deal records; fields present depend on the `fields` preset.'),
+      'Gainium API envelope with the list of deals in `data`.',
+    ),
   },
 
   {
@@ -1595,6 +1678,10 @@ export const tools: Tool[] = [
       },
       required: ['dealType', 'dealId'],
     },
+    outputSchema: envelopeOutput(
+      objectData('The deal record; fields present depend on the `fields` preset.'),
+      'Gainium API envelope with the deal in `data`.',
+    ),
   },
 
   {
@@ -1808,6 +1895,9 @@ export const tools: Tool[] = [
       },
       required: ['target', 'botType'],
     },
+    outputSchema: genericObjectOutput(
+      'For target="requests"/"request": the Gainium API envelope ({status, reason, data, meta?}) with existing backtest request records. For target="schema"/"template": a locally generated guidance object describing the backtest payload shape and operations.',
+    ),
   },
 
   // ─── Discovery ───────────────────────────────────────────────────────────
@@ -1858,6 +1948,10 @@ export const tools: Tool[] = [
       },
       required: ['target'],
     },
+    outputSchema: envelopeOutput(
+      anyData('Discovery metadata for the requested target: bot schemas, bot sections, indicator schemas (object), or lists of bots/indicators/exchanges (array).'),
+      'Gainium API envelope with discovery metadata in `data`.',
+    ),
   },
 
   // ─── Account & Settings ──────────────────────────────────────────────────
@@ -1901,6 +1995,10 @@ export const tools: Tool[] = [
       },
       required: ['info'],
     },
+    outputSchema: envelopeOutput(
+      anyData('Account information for the requested type: balances, connected exchanges, global variables, or supported exchanges (array or object depending on `info`).'),
+      'Gainium API envelope with account information in `data`.',
+    ),
   },
 
   {
@@ -1989,6 +2087,10 @@ export const tools: Tool[] = [
         },
       },
     },
+    outputSchema: envelopeOutput(
+      arrayData('Screener rows (coins) with market data. When `sort` is used, ranked client-side and `meta` records the sort details.'),
+      'Gainium API envelope with screener rows in `data`.',
+    ),
   },
 
   {
@@ -2037,6 +2139,10 @@ export const tools: Tool[] = [
       },
       required: ['botType'],
     },
+    outputSchema: envelopeOutput(
+      arrayData('Curated preset rows (one per coin), each with tiers × strategy, ROI, drawdown, and (unless summary) the full settings blob.'),
+      'Gainium API envelope with curated presets in `data`.',
+    ),
   },
 
   {
@@ -2103,6 +2209,13 @@ export const exposedTools: Tool[] = READONLY_MODE
   ? tools.filter((t) => t.annotations?.readOnlyHint === true)
   : tools
 const READONLY_TOOL_NAMES = new Set(exposedTools.map((t) => t.name))
+
+// Tools that declare an outputSchema. For these we also emit `structuredContent`
+// (the parsed JSON) alongside the text block, so clients that validate against
+// the schema get a conforming structured payload.
+const OUTPUT_SCHEMA_TOOL_NAMES = new Set(
+  tools.filter((t) => t.outputSchema).map((t) => t.name),
+)
 
 // ── Tool Handler ────────────────────────────────────────────────────────────
 
@@ -2996,7 +3109,24 @@ function createMcpServer(): Server {
       )
       const args = isPlainObject(toolArgs) ? { ...toolArgs } : {}
       const result = await handleToolCall(name, args, client)
-      return { content: [{ type: 'text' as const, text: result }] }
+      const response: {
+        content: { type: 'text'; text: string }[]
+        structuredContent?: Record<string, unknown>
+      } = { content: [{ type: 'text' as const, text: result }] }
+      // For tools that declare an outputSchema, also return the parsed object as
+      // structuredContent. Read tools always return a JSON object; skip silently
+      // if parsing fails or the top level isn't a plain object.
+      if (OUTPUT_SCHEMA_TOOL_NAMES.has(name)) {
+        try {
+          const parsed = JSON.parse(result)
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            response.structuredContent = parsed
+          }
+        } catch {
+          // leave as text-only
+        }
+      }
+      return response
     } catch (error: any) {
       return {
         content: [
@@ -3047,6 +3177,25 @@ async function startHttpServer(): Promise<void> {
       }
 
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+
+      // OpenAI Apps domain verification. Public (no auth), served at the origin
+      // root so OpenAI can confirm we control this hostname. Returns the exact
+      // challenge token as plain text.
+      if (url.pathname === '/.well-known/openai-apps-challenge') {
+        if (req.method !== 'GET') {
+          writeMethodNotAllowed(res, ['GET'])
+          return
+        }
+        if (!OPENAI_APPS_CHALLENGE_TOKEN) {
+          writeTextResponse(res, 404, 'Not Found')
+          return
+        }
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.end(OPENAI_APPS_CHALLENGE_TOKEN)
+        return
+      }
 
       // OAuth protected-resource metadata (RFC 9728). Served at both the
       // bare path and the path-inserted variant so clients find it either way.
