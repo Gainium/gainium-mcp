@@ -274,7 +274,10 @@ function resourceMetadataDoc(req: IncomingMessage): Record<string, unknown> {
   return {
     resource: `${base}${MCP_HTTP_PATH}`,
     authorization_servers: [OAUTH_ISSUER],
-    scopes_supported: ['read', 'write'],
+    // Read-only connector advertises only the read scope so clients request it
+    // and the consent screen need not offer write.
+    scopes_supported:
+      process.env.GAINIUM_READONLY === 'true' ? ['read'] : ['read', 'write'],
     bearer_methods_supported: ['header'],
   }
 }
