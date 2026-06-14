@@ -48,9 +48,11 @@ On first connect, Claude runs the OAuth flow → consent on `app.gainium.io` →
 
 ## Tool listing (19)
 
-**Read-only:** `list_bots`, `get_bot`, `list_deals`, `get_deal`, `run_backtest`, `backtest_info`, `discover`, `get_account`, `get_screener`, `list_presets`
+**Read-only (9 — exposed by the directory connector `/read`):** `list_bots`, `get_bot`, `list_deals`, `get_deal`, `backtest_info`, `discover`, `get_account`, `get_screener`, `list_presets`
 
-**Write / destructive:** `create_bot`, `update_bot`, `clone_bot`, `manage_bot` (start/stop/archive/restore/changePairs), `create_deal`, `update_deal`, `manage_deal` (close/addFunds/reduceFunds), `manage_global_variable` (create/update/delete), `apply_preset`
+**Write / job (10 — full connector `/mcp` only):** `create_bot`, `update_bot`, `clone_bot`, `manage_bot` (start/stop/archive/restore/changePairs), `create_deal`, `update_deal`, `manage_deal` (close/addFunds/reduceFunds), `manage_global_variable` (create/update/delete), `apply_preset`, `run_backtest` (its `request`/`requestSync` modes submit a backtest job — not read-only, so excluded from `/read`)
+
+The read-only tools carry `readOnlyHint: true, openWorldHint: false, destructiveHint: false`.
 
 ## Example prompts (live in public docs)
 

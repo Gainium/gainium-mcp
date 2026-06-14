@@ -140,7 +140,7 @@ write tools set `destructiveHint`.
 
 | Tool | Access | Description |
 |---|---|---|
-| `run_backtest` | read | Run a backtest: `validate`, `estimate`, async, or sync |
+| `run_backtest` | write | Run a backtest: `validate`, `estimate`, async, or sync (`request`/`requestSync` submit a job — not read-only) |
 | `backtest_info` | read | List backtest requests or get one by ID |
 
 ### Discovery, Account & Market
@@ -163,8 +163,9 @@ Using `minimal` reduces payload size by ~85%.
 
 ## API Permissions
 
-- **Read-only key**: read tools only (`list_*`, `get_*`, `discover`, `run_backtest`, `backtest_info`, `get_screener`)
-- **Write key**: all tools, including `create_*`, `update_*`, `clone_bot`, `manage_bot`, `manage_deal`, and `manage_global_variable`
+- **Read-only key**: read tools only (`list_*`, `get_*`, `discover`, `backtest_info`, `get_screener`, `list_presets`)
+- **Write key**: all tools, including `create_*`, `update_*`, `clone_bot`, `manage_bot`, `manage_deal`, `manage_global_variable`, `apply_preset`, and `run_backtest`
+- **Read-only directory connector** (`/mcp` with `GAINIUM_READONLY=true`, served at `mcp.gainium.io/read`): exposes and allows only the 9 `readOnlyHint` tools — `run_backtest` and all write tools are excluded
 
 ## Development
 
