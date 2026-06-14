@@ -1267,7 +1267,7 @@ export const tools: Tool[] = [
 
   {
     name: 'list_bots',
-    annotations: { title: 'List Bots', readOnlyHint: true },
+    annotations: { title: 'List Bots', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'List bots by type (DCA, Combo, or Grid). Supports field selection presets (minimal, standard, extended, full). Supports filtering by status and paper/real trading context.',
     inputSchema: {
@@ -1289,7 +1289,7 @@ export const tools: Tool[] = [
 
   {
     name: 'get_bot',
-    annotations: { title: 'Get Bot', readOnlyHint: true },
+    annotations: { title: 'Get Bot', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'Get a single bot by its MongoDB ObjectId or UUID. Supports the same field selection presets as list_bots.',
     inputSchema: {
@@ -1552,7 +1552,7 @@ export const tools: Tool[] = [
 
   {
     name: 'list_deals',
-    annotations: { title: 'List Deals', readOnlyHint: true },
+    annotations: { title: 'List Deals', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'List deals by type (DCA, Combo, or Terminal). Supports field selection presets. Supports filtering by status and botId.',
     inputSchema: {
@@ -1578,7 +1578,7 @@ export const tools: Tool[] = [
 
   {
     name: 'get_deal',
-    annotations: { title: 'Get Deal', readOnlyHint: true },
+    annotations: { title: 'Get Deal', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'Get a single deal by its MongoDB ObjectId. Supports the same field selection presets as list_deals.',
     inputSchema: {
@@ -1747,7 +1747,7 @@ export const tools: Tool[] = [
 
   {
     name: 'run_backtest',
-    annotations: { title: 'Run Backtest', readOnlyHint: true },
+    annotations: { title: 'Run Backtest', readOnlyHint: false, openWorldHint: false, destructiveHint: false },
     description:
       'Run a backtest operation: validate, estimate cost, request async, or request with sync response. Pass a backtest payload with exchange, exchangeUUID, and bot settings.',
     inputSchema: {
@@ -1777,7 +1777,7 @@ export const tools: Tool[] = [
 
   {
     name: 'backtest_info',
-    annotations: { title: 'Backtest Info', readOnlyHint: true },
+    annotations: { title: 'Backtest Info', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'Get backtest information: list requests, fetch a specific request, get operation schema, or build a payload template.',
     inputSchema: {
@@ -1814,7 +1814,7 @@ export const tools: Tool[] = [
 
   {
     name: 'discover',
-    annotations: { title: 'Discover Resources', readOnlyHint: true },
+    annotations: { title: 'Discover Resources', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'Discover bots, bot details, bot sections, indicators, or supported exchanges. Use this to learn available fields, defaults, and strategies.',
     inputSchema: {
@@ -1864,7 +1864,7 @@ export const tools: Tool[] = [
 
   {
     name: 'get_account',
-    annotations: { title: 'Get Account', readOnlyHint: true },
+    annotations: { title: 'Get Account', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'Get account information: balances, connected exchanges, global variables, or supported exchanges.',
     inputSchema: {
@@ -1945,7 +1945,7 @@ export const tools: Tool[] = [
 
   {
     name: 'get_screener',
-    annotations: { title: 'Get Screener', readOnlyHint: true },
+    annotations: { title: 'Get Screener', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'Get cryptocurrency screener results. Filter by market cap, volume, and sort by various metrics.',
     inputSchema: {
@@ -1993,7 +1993,7 @@ export const tools: Tool[] = [
 
   {
     name: 'list_presets',
-    annotations: { title: 'List Curated Presets', readOnlyHint: true },
+    annotations: { title: 'List Curated Presets', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'List curated bot-strategy presets, ranked by backtested performance. Each coin returns tiers ' +
       '(short/mid/long) × strategy (long/short) with ROI, drawdown, and a ready-to-use settings blob. ' +
