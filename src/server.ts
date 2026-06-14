@@ -1996,8 +1996,8 @@ export const tools: Tool[] = [
     annotations: { title: 'List Curated Presets', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'List curated bot-strategy presets, ranked by backtested performance. Each coin returns tiers ' +
-      '(short/mid/long) × strategy (long/short) with ROI, drawdown, and a ready-to-use settings blob. ' +
-      'Use apply_preset to create a bot from one, or pass the settings to create_bot.',
+      '(short/mid/long) × strategy (long/short) with ROI, drawdown, and the full strategy settings ' +
+      'for review and comparison.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2957,20 +2957,24 @@ function createMcpServer(): Server {
   }))
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: [
-      {
-        uri: WORKFLOW_RESOURCE_URI,
-        name: 'Gainium agent workflow',
-        description:
-          'Canonical layer model, recommended flows, and terminology reference for using the Gainium MCP tools. Read this to understand how discovery, bot creation, and backtest tools relate to each other.',
-        mimeType: 'text/plain',
-      },
-    ],
+    // The workflow guide describes bot-creation/management; omit it on the
+    // read-only connector so the surface points to nothing it can't do.
+    resources: READONLY_MODE
+      ? []
+      : [
+          {
+            uri: WORKFLOW_RESOURCE_URI,
+            name: 'Gainium agent workflow',
+            description:
+              'Canonical layer model, recommended flows, and terminology reference for using the Gainium MCP tools. Read this to understand how discovery, bot creation, and backtest tools relate to each other.',
+            mimeType: 'text/plain',
+          },
+        ],
   }))
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const uri = request.params.uri
-    if (uri === WORKFLOW_RESOURCE_URI) {
+    if (uri === WORKFLOW_RESOURCE_URI && !READONLY_MODE) {
       return {
         contents: [
           {
