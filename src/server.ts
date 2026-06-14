@@ -25,7 +25,7 @@ import { GainiumClient } from './gainium-client.js'
 // ── Environment ──────────────────────────────────────────────────────────────
 
 const SERVER_NAME = 'gainium-mcp'
-const SERVER_VERSION = '3.2.0'
+const SERVER_VERSION = '3.2.1'
 
 const API_KEY = process.env.GAINIUM_API_KEY
 const API_SECRET = process.env.GAINIUM_API_SECRET
@@ -1135,14 +1135,21 @@ const paperContextParam = {
 const botIdRequired = {
   botId: {
     type: 'string' as const,
-    description: 'Bot ID — MongoDB ObjectId',
+    description:
+      'Bot identifier. Accepts EITHER the bot\'s 24-character hex MongoDB ObjectId ' +
+      '(e.g. "65f000000000000000000001") OR the bot\'s UUID ' +
+      '(e.g. "550e8400-e29b-41d4-a716-446655440000"). Either form resolves to the same bot — ' +
+      'use whichever the bot record exposes. Get both from list_bots (the `_id` and `uuid` fields).',
   },
 }
 
 const dealIdRequired = {
   dealId: {
     type: 'string' as const,
-    description: 'Deal ID — MongoDB ObjectId',
+    description:
+      'Deal identifier. Accepts EITHER the deal\'s 24-character hex MongoDB ObjectId ' +
+      '(e.g. "65f000000000000000000001") OR the deal\'s UUID. Either form resolves to the same deal — ' +
+      'use whichever the deal record exposes. Get both from list_deals (the `_id` and `uuid` fields).',
   },
 }
 
