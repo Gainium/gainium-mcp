@@ -63,7 +63,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only lists existing backtest requests, retrieves an existing request, or returns local schema and template guidance.",
+        "read_only_justification": "Only lists existing server-side backtest requests, retrieves one such request by id, or returns locally generated schema and template guidance. It does not submit, run, or modify backtests.",
         "open_world_justification": "Does not publish content or change public internet state or external third-party systems.",
         "destructive_justification": "Does not delete, overwrite, revoke access, place trades, or perform irreversible actions."
       }
