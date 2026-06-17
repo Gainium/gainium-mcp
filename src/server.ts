@@ -25,7 +25,7 @@ import { GainiumClient } from './gainium-client.js'
 // ── Environment ──────────────────────────────────────────────────────────────
 
 const SERVER_NAME = 'gainium-mcp'
-const SERVER_VERSION = '3.2.1'
+const SERVER_VERSION = '3.2.3'
 
 const API_KEY = process.env.GAINIUM_API_KEY
 const API_SECRET = process.env.GAINIUM_API_SECRET
@@ -2865,12 +2865,25 @@ async function handleToolCall(
       const info = args.info
 
       if (info === 'balances') {
+        // The API expects `assets` as a single comma-separated string. Fold the
+        // singular `asset` and any array `assets` into that shape — sending
+        // `asset` raw makes the API ignore it, and a repeated `assets` param
+        // (from an array) is rejected with 400.
+        const assetList = [
+          ...(typeof args.asset === 'string' && args.asset ? [args.asset] : []),
+          ...(Array.isArray(args.assets)
+            ? args.assets
+            : typeof args.assets === 'string' && args.assets
+              ? [args.assets]
+              : []),
+        ]
+          .map((a) => `${a}`.trim())
+          .filter(Boolean)
         const res = await client.request('GET', '/api/v2/user/balances', {
           query: {
             fields: args.fields,
             exchangeId: args.exchangeId,
-            asset: args.asset,
-            assets: args.assets,
+            assets: assetList.length ? assetList.join(',') : undefined,
           },
           headers: paperHeader(args),
         })
