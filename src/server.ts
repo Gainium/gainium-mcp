@@ -1370,7 +1370,9 @@ export const tools: Tool[] = [
     name: 'list_bots',
     annotations: { title: 'List Bots', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'List bots by type (DCA, Combo, or Grid). Supports field selection presets (minimal, standard, extended, full). Supports filtering by status and paper/real trading context.',
+      'List the authenticated user\'s bots of one type (DCA, Combo, or Grid), with status/pagination/paper-context filters. ' +
+      'Returns one page (controlled by `page`) of bot records; `fields` accepts a preset (minimal | standard | extended | full) or a comma-separated list of specific fields. ' +
+      'Use this when you don\'t know the bot id yet or want to filter/browse — once you have an id, use `get_bot` for the single full record.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1396,7 +1398,8 @@ export const tools: Tool[] = [
     name: 'get_bot',
     annotations: { title: 'Get Bot', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'Get a single bot by its MongoDB ObjectId or UUID. Supports the same field selection presets as list_bots.',
+      'Read a single bot by its MongoDB ObjectId or UUID. Returns the full bot record (fields controlled by the same `fields` preset/csv as `list_bots`). ' +
+      'Use when you already have the bot id and need its current config or recent stats. To browse without an id use `list_bots`; to modify config use `update_bot`; to start/stop/archive use `manage_bot`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1561,7 +1564,10 @@ export const tools: Tool[] = [
     name: 'update_bot',
     annotations: { title: 'Update Bot', readOnlyHint: false, destructiveHint: true },
     description:
-      'Update an existing bot (DCA or Combo only; Grid has no update endpoint). Pass only the fields you want to change. Settings object must be non-empty. Boolean gate enforcement: feature value fields are silently ignored unless their toggle is set to true.',
+      'Patch the settings of an existing DCA or Combo bot (Grid has no update endpoint — clone-and-recreate it instead). ' +
+      'Pass only the fields you want to change inside `settings`; an empty `settings` object is rejected. ' +
+      'Boolean gate enforcement: feature value fields (e.g. `slPerc`, `moveTPTrigger`) are silently ignored unless their toggle (`enableSL`, `useMoveTP`, etc.) is also set to `true` — to turn a feature on, send both the toggle and its value in the same call. ' +
+      'Changes apply to new orders; open positions are not retroactively adjusted. Use `manage_bot` for lifecycle (start/stop/archive) and `manage_deal` for per-deal actions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1587,7 +1593,9 @@ export const tools: Tool[] = [
     name: 'clone_bot',
     annotations: { title: 'Clone Bot', readOnlyHint: false, destructiveHint: true },
     description:
-      'Clone an existing bot and optionally override settings. Returns the new bot ID.',
+      'Duplicate an existing bot — copies all configured settings into a new bot and returns the new bot id. Open deals on the source are NOT copied; the clone starts empty. ' +
+      'Pass `overrides` (object of changed fields) to tweak the clone in the same call — e.g. change `pair` or `name` without a follow-up `update_bot`. ' +
+      'Use this over `create_bot` when you want an exact replica of a working config (faster, less error-prone); use `create_bot` when starting from scratch or from `discover`-derived defaults.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1612,7 +1620,9 @@ export const tools: Tool[] = [
     name: 'manage_bot',
     annotations: { title: 'Manage Bot Lifecycle', readOnlyHint: false, destructiveHint: true },
     description:
-      'Manage bot lifecycle: start, stop, archive, restore, or change trading pairs (DCA only). Each action has specific requirements.',
+      'Bot lifecycle actions: `start`, `stop` (requires `closeType` for DCA/Combo or `closeGridType` for Grid — controls how open deals are unwound), `archive`, `restore`, or `changePairs` (DCA only — requires `pair` array). ' +
+      'Effects are immediate: `stop` cancels new entries and may close positions per the chosen `closeType`, `archive` hides a stopped bot from default lists, and `changePairs` mutates the bot in-place. ' +
+      'Use this for run-state changes; use `update_bot` for config edits and `manage_deal` for actions on a specific open deal.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1663,7 +1673,8 @@ export const tools: Tool[] = [
     name: 'list_deals',
     annotations: { title: 'List Deals', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'List deals by type (DCA, Combo, or Terminal). Supports field selection presets. Supports filtering by status and botId.',
+      'List the user\'s deals of one type (DCA, Combo, or Terminal) with status, `botId`, and paper-context filters. Returns one page; `fields` accepts a preset or comma-separated list. ' +
+      'Use this to find active/closed deals across bots or filter by status — once you have a `dealId`, switch to `get_deal` for full detail, `update_deal` for config edits, or `manage_deal` for lifecycle actions (close/add/reduce funds).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1693,7 +1704,8 @@ export const tools: Tool[] = [
     name: 'get_deal',
     annotations: { title: 'Get Deal', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'Get a single deal by its MongoDB ObjectId. Supports the same field selection presets as list_deals.',
+      'Read a single deal by its MongoDB ObjectId — returns the full record (entries, exits, current PnL, settings). `fields` uses the same preset/csv shape as `list_deals`. ' +
+      'Use when you already have the `dealId`; to browse without one use `list_deals`, to change settings use `update_deal`, to act on the position use `manage_deal`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1718,7 +1730,10 @@ export const tools: Tool[] = [
     name: 'create_deal',
     annotations: { title: 'Create Deal', readOnlyHint: false, destructiveHint: true },
     description:
-      'Create a new deal. For dca/combo: starts a deal from an existing bot. For terminal: creates a standalone terminal deal.',
+      'Open a new deal — places real entry orders immediately. Two modes by `dealType`: ' +
+      '`dca` or `combo` opens a new deal under an existing bot (`botId` required, `symbol` optional override); ' +
+      '`terminal` opens a standalone terminal deal not tied to a bot (`exchangeUUID`, `terminalDealType`, `pair`, `strategy`, sizing, TP/SL required — any extra config goes inside `settings`, which is merged into the request body). ' +
+      'Returns the new deal record. Use this to *start* a position; once open, modify with `update_deal` and act on it with `manage_deal`. To configure a bot without opening a deal, use `create_bot` / `update_bot`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1783,7 +1798,9 @@ export const tools: Tool[] = [
     name: 'update_deal',
     annotations: { title: 'Update Deal', readOnlyHint: false, destructiveHint: true },
     description:
-      'Update an existing deal. Pass only the fields you want to change. Settings object must be non-empty.',
+      'Patch the settings of an existing open deal (e.g. take-profit %, stop-loss, trailing TP). Pass only the fields you want to change inside `settings`; empty `settings` is rejected. ' +
+      'Changes apply to the deal\'s pending/future orders; already-filled entries are not re-priced. ' +
+      'For close/add/reduce funds use `manage_deal`; for bot-wide config changes use `update_bot`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1809,7 +1826,9 @@ export const tools: Tool[] = [
     name: 'manage_deal',
     annotations: { title: 'Manage Deal', readOnlyHint: false, destructiveHint: true },
     description:
-      'Manage deal operations: close a deal, add funds, or reduce funds. Each action has specific requirements.',
+      'Lifecycle actions on a single open deal: `close` (terminal — requires `closeType`), `addFunds`, or `reduceFunds` (both require `qty`, `type`, and — when type="fixed" — `asset`). ' +
+      'Returns the updated deal record on success. Effects are immediate and not reversible — a market close fills at the current price, an `addFunds` opens a new entry order. ' +
+      'Use this for *running* deals; create new deals with `create_deal`, edit deal *config* (TP, SL, settings) with `update_deal`, and start/stop the parent bot with `manage_bot`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1866,7 +1885,10 @@ export const tools: Tool[] = [
     name: 'run_backtest',
     annotations: { title: 'Run Backtest', readOnlyHint: false, openWorldHint: false, destructiveHint: false },
     description:
-      'Run a backtest operation: validate, estimate cost, request async, or request with sync response. Pass a backtest payload with exchange, exchangeUUID, and bot settings.',
+      'Submit a backtest of a candidate bot configuration. Four modes by `mode`: ' +
+      '`validate` (server-side schema/sanity check, no run), `estimate` (return credit cost without running), `request` (enqueue an async job — returns a request id you poll via `backtest_info`), `requestSync` (block until done and return the result inline — only viable for small payloads). ' +
+      '`request`/`requestSync` consume backtest credits per the `estimate` figure. Required payload: `exchange`, `exchangeUUID`, and bot `settings` — use `backtest_info` with `target="schema"` for the field shape per bot type. ' +
+      'Use this to *try* a strategy; use `backtest_info` to retrieve results, list past runs, or fetch a payload template.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1896,7 +1918,9 @@ export const tools: Tool[] = [
     name: 'backtest_info',
     annotations: { title: 'Backtest Info', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'Get backtest information: list requests, fetch a specific request, get operation schema, or build a payload template.',
+      'Read-only access to backtest metadata, results, and templates. Four targets by `target`: ' +
+      '`requests` (list the user\'s past backtest requests with status), `request` (fetch a single request — needs `requestId` — returns full results when complete, progress when pending), `schema` (return the JSON shape of a backtest payload for a given `botType` — start here before composing a payload), `template` (return a ready-to-edit payload template). ' +
+      'Use this to poll an async backtest started with `run_backtest`, or to learn the payload shape before submitting one.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1936,7 +1960,9 @@ export const tools: Tool[] = [
     name: 'discover',
     annotations: { title: 'Discover Resources', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'Discover bots, bot details, bot sections, indicators, or supported exchanges. Use this to learn available fields, defaults, and strategies.',
+      'Read-only catalog of available bot types, fields, defaults, and indicators — the source of truth for what `create_bot` / `update_bot` accept. Six targets by `target`: ' +
+      '`bots` (list bot-type names), `bot` (full field schema + defaults for one `botType` — call before `create_bot` to learn what every field means), `botSections` (section grouping for a `botType`), `indicators` (list available indicators), `indicator` (details for one), `supportedExchanges` (catalog of exchanges Gainium can connect). ' +
+      'Use this for *catalog/schema* questions; for the user\'s own connected exchanges and balances use `get_account`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1990,7 +2016,9 @@ export const tools: Tool[] = [
     name: 'get_account',
     annotations: { title: 'Get Account', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'Get account information: balances, connected exchanges, global variables, or supported exchanges.',
+      'Read-only account information selected via `info`: `balances` (per-exchange holdings — `exchangeId`, `asset`/`assets` filters apply), `exchanges` (connected exchange accounts and their UUIDs — needed as `exchangeUUID` when creating bots), `globalVariables` (user-defined constants accessible in strategies), or `supportedExchanges` (catalog of exchanges Gainium can connect). ' +
+      '`exchangeId`/`asset`/`assets` are ignored unless `info=balances`. Authenticated with the configured API key/secret. ' +
+      'For mutating global variables use `manage_global_variable`; this tool only reads them.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2035,7 +2063,10 @@ export const tools: Tool[] = [
     name: 'manage_global_variable',
     annotations: { title: 'Manage Global Variable', readOnlyHint: false, destructiveHint: true },
     description:
-      'Create, update, or delete a global variable. Variables are user-defined constants accessible in strategies.',
+      'Create, update, or delete a global variable. Variables are user-defined constants referenced by name inside bot strategy expressions. ' +
+      '`action` controls which: `create` needs `name`/`type`/`value`; `update` needs `id` plus any of `name`/`type`/`value`; `delete` needs `id` only. ' +
+      'Delete is irreversible — any strategy that references the deleted variable will fall back to its inline default at next evaluation. ' +
+      'To *read* existing variables, use `get_account` with `info="globalVariables"`; this tool only mutates.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2075,7 +2106,10 @@ export const tools: Tool[] = [
     name: 'get_screener',
     annotations: { title: 'Get Screener', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'Get cryptocurrency screener results. Filter by market cap, volume, and sort by various metrics.',
+      'Read-only cryptocurrency screener — browse live price, 24h % change, volume, and market-cap data across hundreds of pairs. ' +
+      'Pagination is 1-based (10 coins per page). Sorting is applied client-side AFTER fetching, so `maxPages` (≤30, default 10) controls how many pages the server fetches before ranking — raise it for "most volatile across the market" queries, lower it to save API calls when an unsorted page is enough. ' +
+      'The `fields` parameter accepts either a preset (minimal | standard | extended | full) or a comma-separated list of specific field names. ' +
+      'Use for live market discovery; for already-tuned bot strategies use `list_presets`, for your own running bots use `list_bots`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2127,9 +2161,9 @@ export const tools: Tool[] = [
     name: 'list_presets',
     annotations: { title: 'List Curated Presets', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
-      'List curated bot-strategy presets, ranked by backtested performance. Each coin returns tiers ' +
-      '(short/mid/long) × strategy (long/short) with ROI, drawdown, and the full strategy settings ' +
-      'for review and comparison.',
+      'Read-only curated bot-strategy presets ranked by backtested performance. Each coin returns tiers (short/mid/long) × strategy (long/short) with ROI, drawdown, and the full strategy `settings`. ' +
+      'Filters: `botType` (required), `coin`+`exchange` (narrow to one pair — skips the closed-deals floor), `strategy` (long/short), `limit` (1–50, default 10). Set `summary: true` to drop the per-tier settings blob for a lightweight ranked list; `includeNoDeals: true` keeps coins with too few closed deals to meet the default floor. ' +
+      'Use this to *browse* working strategies; pass any chosen row\'s tier/strategy to `apply_preset` to spin up a bot from it in one call.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2183,8 +2217,9 @@ export const tools: Tool[] = [
       destructiveHint: true,
     },
     description:
-      'Create a bot from a curated preset in one call: fetches the preset for the given coin/exchange/tier/strategy, ' +
-      'then creates a bot from its settings. Override pair, name, or sizing as needed.',
+      'Create a real bot from a curated preset in a single call — equivalent to `list_presets` → pick row → `create_bot` collapsed into one step. ' +
+      'Identifies the preset by `botType` + `coin` + `exchange` + `tier` + `strategy`, then creates a bot from its `settings`. Optional overrides: `pair` (override the default pair), `name` (custom bot name), and `baseOrderSize` / `orderSize` (override sizing without touching the rest of the strategy). ' +
+      'Returns the new bot id. Same destructive effect as `create_bot`. Use this when you trust the preset and want to start fast; use `list_presets` first if you want to compare before committing.',
     inputSchema: {
       type: 'object',
       properties: {

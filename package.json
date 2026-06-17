@@ -1,6 +1,6 @@
 {
   "name": "gainium-mcp",
-  "version": "3.2.3",
+  "version": "3.3.0",
   "mcpName": "io.gainium/gainium-mcp",
   "type": "module",
   "description": "MCP server for Gainium — manage trading bots, deals, and balances via AI assistants",
