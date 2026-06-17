@@ -1,0 +1,1156 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.gainium/gainium-mcp",
+  "description": "MCP server for Gainium trading bot platform — manage bots, deals, balances and more via AI assistants",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/Gainium/gainium-mcp",
+    "source": "github"
+  },
+  "version": "3.2.3",
+  "websiteUrl": "https://gainium.io",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registry_name": "npm",
+      "identifier": "gainium-mcp",
+      "name": "gainium-mcp",
+      "version": "3.2.3",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "GAINIUM_API_KEY",
+          "description": "Gainium API key (https://app.gainium.io → Settings → API)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "GAINIUM_API_SECRET",
+          "description": "Gainium API secret (paired with GAINIUM_API_KEY)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "GAINIUM_PAPER_ONLY",
+          "description": "Set to \"true\" to restrict the server to paper-trading bots only",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "false"
+        },
+        {
+          "name": "GAINIUM_ALLOWED_BOT_ID",
+          "description": "Optional: restrict all operations to a single bot ID",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.gainium.io/mcp"
+    }
+  ],
+  "tools": [
+    {
+      "name": "list_bots",
+      "description": "List bots by type (DCA, Combo, or Grid). Supports field selection presets (minimal, standard, extended, full). Supports filtering by status and paper/real trading context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type"
+          },
+          "fields": {
+            "type": "string",
+            "description": "Field selection: preset (\"minimal\", \"standard\", \"extended\", \"full\") or comma-separated fields (e.g. \"_id,uuid,settings.name,profit.total\"). Default: \"standard\""
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination (1-based). Default: 1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed",
+              "range",
+              "error",
+              "archive",
+              "monitoring"
+            ],
+            "description": "Filter by bot status"
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          }
+        },
+        "required": [
+          "botType"
+        ]
+      }
+    },
+    {
+      "name": "get_bot",
+      "description": "Get a single bot by its MongoDB ObjectId or UUID. Supports the same field selection presets as list_bots.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type"
+          },
+          "botId": {
+            "type": "string",
+            "description": "Bot identifier. Accepts EITHER the bot's 24-character hex MongoDB ObjectId (e.g. \"65f000000000000000000001\") OR the bot's UUID (e.g. \"550e8400-e29b-41d4-a716-446655440000\"). Either form resolves to the same bot — use whichever the bot record exposes. Get both from list_bots (the `_id` and `uuid` fields)."
+          },
+          "fields": {
+            "type": "string",
+            "description": "Field selection: preset (\"minimal\", \"standard\", \"extended\", \"full\") or comma-separated fields (e.g. \"_id,uuid,settings.name,profit.total\"). Default: \"standard\""
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          }
+        },
+        "required": [
+          "botType",
+          "botId"
+        ]
+      }
+    },
+    {
+      "name": "create_bot",
+      "description": "Create a new bot in a single step — no follow-up update needed. The top-level properties cover the most common fields. For any field from discover(target: \"bot\") that is NOT listed here (e.g. startOrderType, useMoveTP, moveTPTrigger, moveTPValue, stopLossTimeout, takeProfitTimeout, dcaOrdersMultiplier, dcaStepMultiplier, trailingTP, trailingTPPerc, indicators, timers, and any other discovery field), pass them inside the 'settings' object — it is transparently merged into the request body at creation time. This avoids a create→update two-step. Use discover(target: 'bot', botType) to discover all available fields and defaults. The 'futures' and 'coinm' fields are auto-detected from the exchange — do not provide them. Requires write API key permission.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type"
+          },
+          "exchangeUUID": {
+            "type": "string",
+            "description": "UUID of the exchange connection to use"
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "pair": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Trading pairs as array of {base}_{quote} strings, e.g. [\"BTC_USDT\"]. For Grid bots pass a single-element array — the server unwraps it automatically."
+          },
+          "name": {
+            "type": "string",
+            "description": "Bot name"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "LONG",
+              "SHORT"
+            ],
+            "description": "Trading direction. Default: LONG"
+          },
+          "baseOrderSize": {
+            "type": "string",
+            "description": "Size of the initial base order, e.g. \"100\""
+          },
+          "orderSize": {
+            "type": "string",
+            "description": "Size of each DCA/grid order, e.g. \"100\""
+          },
+          "orderSizeType": {
+            "type": "string",
+            "enum": [
+              "base",
+              "quote",
+              "percFree",
+              "percTotal",
+              "usd"
+            ],
+            "description": "Order size reference currency. Default: quote"
+          },
+          "tpPerc": {
+            "type": "string",
+            "description": "Take profit percentage, e.g. \"1.5\""
+          },
+          "slPerc": {
+            "type": "string",
+            "description": "Stop loss percentage, e.g. \"-10\""
+          },
+          "step": {
+            "type": "string",
+            "description": "Price deviation % for next DCA/grid order, e.g. \"1.5\""
+          },
+          "ordersCount": {
+            "type": "integer",
+            "description": "Maximum number of orders (DCA/Combo)"
+          },
+          "gridLevel": {
+            "type": "string",
+            "description": "Grid level count (Combo only)"
+          },
+          "maxNumberOfOpenDeals": {
+            "type": "string",
+            "description": "Maximum concurrent open deals, e.g. \"1\""
+          },
+          "topPrice": {
+            "type": "number",
+            "description": "Top price for grid range (Grid only)"
+          },
+          "lowPrice": {
+            "type": "number",
+            "description": "Low price for grid range (Grid only)"
+          },
+          "budget": {
+            "type": "number",
+            "description": "Total budget for grid (Grid only)"
+          },
+          "levels": {
+            "type": "integer",
+            "description": "Number of grid levels (Grid only)"
+          },
+          "gridType": {
+            "type": "string",
+            "enum": [
+              "arithmetic",
+              "geometric"
+            ],
+            "description": "Grid distribution type (Grid only)"
+          },
+          "startCondition": {
+            "type": "string",
+            "enum": [
+              "ASAP",
+              "Manual",
+              "TradingviewSignals",
+              "Timer",
+              "TechnicalIndicators"
+            ],
+            "description": "Condition to start a new deal. Default: ASAP"
+          },
+          "useDca": {
+            "type": "boolean",
+            "description": "Enable DCA orders. Set false for a single base-order bot."
+          },
+          "useSl": {
+            "type": "boolean",
+            "description": "Enable stop-loss. When true, slPerc is used."
+          },
+          "moveSL": {
+            "type": "boolean",
+            "description": "Enable trailing stop-loss (move SL as price moves in your favour)."
+          },
+          "moveSLTrigger": {
+            "type": "string",
+            "description": "Profit % at which trailing SL is activated, e.g. \"1.0\""
+          },
+          "moveSLValue": {
+            "type": "string",
+            "description": "Trail distance % for the moving SL, e.g. \"0.5\""
+          },
+          "startOrderType": {
+            "type": "string",
+            "enum": [
+              "market",
+              "limit"
+            ],
+            "description": "Order type for the base (start) order. Default: market"
+          },
+          "settings": {
+            "type": "object",
+            "description": "Transparent passthrough for any bot settings field from discover(target: \"bot\") that is not listed as a top-level property above. All keys are merged flat into the request body — use this to create a fully-configured bot in a single call."
+          }
+        },
+        "required": [
+          "botType",
+          "exchangeUUID",
+          "pair"
+        ]
+      }
+    },
+    {
+      "name": "update_bot",
+      "description": "Update an existing bot (DCA or Combo only; Grid has no update endpoint). Pass only the fields you want to change. Settings object must be non-empty. Boolean gate enforcement: feature value fields are silently ignored unless their toggle is set to true.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo"
+            ],
+            "description": "Bot type (Grid does not support updates)"
+          },
+          "botId": {
+            "type": "string",
+            "description": "Bot identifier. Accepts EITHER the bot's 24-character hex MongoDB ObjectId (e.g. \"65f000000000000000000001\") OR the bot's UUID (e.g. \"550e8400-e29b-41d4-a716-446655440000\"). Either form resolves to the same bot — use whichever the bot record exposes. Get both from list_bots (the `_id` and `uuid` fields)."
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "settings": {
+            "type": "object",
+            "minProperties": 1,
+            "description": "Settings object with fields to update. Only include changed fields."
+          }
+        },
+        "required": [
+          "botType",
+          "botId",
+          "settings"
+        ]
+      }
+    },
+    {
+      "name": "clone_bot",
+      "description": "Clone an existing bot and optionally override settings. Returns the new bot ID.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type"
+          },
+          "botId": {
+            "type": "string",
+            "description": "Bot identifier. Accepts EITHER the bot's 24-character hex MongoDB ObjectId (e.g. \"65f000000000000000000001\") OR the bot's UUID (e.g. \"550e8400-e29b-41d4-a716-446655440000\"). Either form resolves to the same bot — use whichever the bot record exposes. Get both from list_bots (the `_id` and `uuid` fields)."
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "overrides": {
+            "type": "object",
+            "description": "Optional settings to override in the cloned bot. Pass an object with fields to change."
+          }
+        },
+        "required": [
+          "botType",
+          "botId"
+        ]
+      }
+    },
+    {
+      "name": "manage_bot",
+      "description": "Manage bot lifecycle: start, stop, archive, restore, or change trading pairs (DCA only). Each action has specific requirements.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop",
+              "archive",
+              "restore",
+              "changePairs"
+            ],
+            "description": "Action to perform on the bot"
+          },
+          "botId": {
+            "type": "string",
+            "description": "Bot identifier. Accepts EITHER the bot's 24-character hex MongoDB ObjectId (e.g. \"65f000000000000000000001\") OR the bot's UUID (e.g. \"550e8400-e29b-41d4-a716-446655440000\"). Either form resolves to the same bot — use whichever the bot record exposes. Get both from list_bots (the `_id` and `uuid` fields)."
+          },
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type"
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "closeType": {
+            "type": "string",
+            "enum": [
+              "cancel",
+              "closeByLimit",
+              "closeByMarket",
+              "leave"
+            ],
+            "description": "Close type for stop action (dca/combo). \"closeByMarket\" closes all positions, \"leave\" pauses the bot."
+          },
+          "closeGridType": {
+            "type": "string",
+            "enum": [
+              "cancel",
+              "closeByMarket",
+              "closeByLimit"
+            ],
+            "description": "Close type for stop action (grid only)"
+          },
+          "cancelPartiallyFilled": {
+            "type": "boolean",
+            "description": "Whether to cancel partially filled orders when stopping (optional)"
+          },
+          "pair": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Full replacement set of trading pairs for changePairs action (DCA, multi-pair bots only). Underscore format, e.g. [\"BTC_USDT\",\"ETH_USDT\"]. Replaces all existing pairs. Single-coin bots reject pair changes."
+          }
+        },
+        "required": [
+          "action",
+          "botId",
+          "botType"
+        ]
+      }
+    },
+    {
+      "name": "list_deals",
+      "description": "List deals by type (DCA, Combo, or Terminal). Supports field selection presets. Supports filtering by status and botId.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dealType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "terminal"
+            ],
+            "description": "Deal type"
+          },
+          "fields": {
+            "type": "string",
+            "description": "Field selection: preset (\"minimal\", \"standard\", \"extended\", \"full\") or comma-separated fields (e.g. \"_id,uuid,settings.name,profit.total\"). Default: \"standard\""
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination (1-based). Default: 1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed",
+              "start",
+              "error",
+              "canceled"
+            ],
+            "description": "Filter by deal status"
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "botId": {
+            "type": "string",
+            "description": "Filter by bot ID (optional)"
+          }
+        },
+        "required": [
+          "dealType"
+        ]
+      }
+    },
+    {
+      "name": "get_deal",
+      "description": "Get a single deal by its MongoDB ObjectId. Supports the same field selection presets as list_deals.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dealType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "terminal"
+            ],
+            "description": "Deal type"
+          },
+          "dealId": {
+            "type": "string",
+            "description": "Deal identifier. Accepts EITHER the deal's 24-character hex MongoDB ObjectId (e.g. \"65f000000000000000000001\") OR the deal's UUID. Either form resolves to the same deal — use whichever the deal record exposes. Get both from list_deals (the `_id` and `uuid` fields)."
+          },
+          "fields": {
+            "type": "string",
+            "description": "Field selection: preset (\"minimal\", \"standard\", \"extended\", \"full\") or comma-separated fields (e.g. \"_id,uuid,settings.name,profit.total\"). Default: \"standard\""
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          }
+        },
+        "required": [
+          "dealType",
+          "dealId"
+        ]
+      }
+    },
+    {
+      "name": "create_deal",
+      "description": "Create a new deal. For dca/combo: starts a deal from an existing bot. For terminal: creates a standalone terminal deal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dealType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "terminal"
+            ],
+            "description": "Deal type"
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "botId": {
+            "type": "string",
+            "description": "Bot ID (required for dca/combo)"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "Optional symbol override (dca/combo)"
+          },
+          "exchangeUUID": {
+            "type": "string",
+            "description": "Exchange UUID (required for terminal)"
+          },
+          "terminalDealType": {
+            "type": "string",
+            "description": "Terminal deal type (required for terminal)"
+          },
+          "pair": {
+            "type": "string",
+            "description": "Trading pair for terminal (optional)"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "LONG",
+              "SHORT"
+            ],
+            "description": "Trading strategy for terminal"
+          },
+          "baseOrderSize": {
+            "type": "string",
+            "description": "Base order size for terminal"
+          },
+          "orderSize": {
+            "type": "string",
+            "description": "Order size for terminal"
+          },
+          "tpPerc": {
+            "type": "string",
+            "description": "Take profit percentage for terminal"
+          },
+          "slPerc": {
+            "type": "string",
+            "description": "Stop loss percentage for terminal"
+          },
+          "settings": {
+            "type": "object",
+            "description": "Transparent passthrough for any additional terminal deal settings. Merged flat into request body."
+          }
+        },
+        "required": [
+          "dealType"
+        ]
+      }
+    },
+    {
+      "name": "update_deal",
+      "description": "Update an existing deal. Pass only the fields you want to change. Settings object must be non-empty.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dealType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "terminal"
+            ],
+            "description": "Deal type"
+          },
+          "dealId": {
+            "type": "string",
+            "description": "Deal identifier. Accepts EITHER the deal's 24-character hex MongoDB ObjectId (e.g. \"65f000000000000000000001\") OR the deal's UUID. Either form resolves to the same deal — use whichever the deal record exposes. Get both from list_deals (the `_id` and `uuid` fields)."
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "settings": {
+            "type": "object",
+            "minProperties": 1,
+            "description": "Settings object with fields to update. Only include changed fields."
+          }
+        },
+        "required": [
+          "dealType",
+          "dealId",
+          "settings"
+        ]
+      }
+    },
+    {
+      "name": "manage_deal",
+      "description": "Manage deal operations: close a deal, add funds, or reduce funds. Each action has specific requirements.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "close",
+              "addFunds",
+              "reduceFunds"
+            ],
+            "description": "Action to perform on the deal"
+          },
+          "dealId": {
+            "type": "string",
+            "description": "Deal identifier. Accepts EITHER the deal's 24-character hex MongoDB ObjectId (e.g. \"65f000000000000000000001\") OR the deal's UUID. Either form resolves to the same deal — use whichever the deal record exposes. Get both from list_deals (the `_id` and `uuid` fields)."
+          },
+          "dealType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "terminal"
+            ],
+            "description": "Deal type"
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "closeType": {
+            "type": "string",
+            "enum": [
+              "cancel",
+              "closeByLimit",
+              "closeByMarket",
+              "leave"
+            ],
+            "description": "Close type for close action"
+          },
+          "botId": {
+            "type": "string",
+            "description": "Bot ID for addFunds/reduceFunds (alternative to dealId for dca/combo)"
+          },
+          "qty": {
+            "type": "string",
+            "description": "Amount to add/reduce. With type=\"fixed\" it is an amount in the chosen asset denomination; with type=\"perc\" it is a percentage of the position."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "fixed",
+              "perc"
+            ],
+            "description": "Type: fixed amount or percentage"
+          },
+          "asset": {
+            "type": "string",
+            "enum": [
+              "base",
+              "quote"
+            ],
+            "description": "Denomination for a fixed add/reduce — \"quote\" (e.g. USDT) or \"base\" (the coin). Required when type=\"fixed\"; this is NOT a ticker symbol. Ignored when type=\"perc\"."
+          },
+          "symbol": {
+            "type": "string",
+            "description": "Symbol override (optional)"
+          }
+        },
+        "required": [
+          "action",
+          "dealId",
+          "dealType"
+        ]
+      }
+    },
+    {
+      "name": "run_backtest",
+      "description": "Run a backtest operation: validate, estimate cost, request async, or request with sync response. Pass a backtest payload with exchange, exchangeUUID, and bot settings.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "validate",
+              "estimate",
+              "request",
+              "requestSync"
+            ],
+            "description": "Backtest mode. validate: confirm payload. estimate: check credit cost. request: async backtest. requestSync: wait for result."
+          },
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type for the backtest"
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "data"
+            ],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": [
+                  "exchange",
+                  "exchangeUUID",
+                  "settings"
+                ],
+                "properties": {
+                  "exchange": {
+                    "type": "string",
+                    "description": "Exchange code string, e.g. \"binance\", \"okxLinear\". Use discover(target: \"supportedExchanges\") to list all codes, or get_account(info: \"exchanges\") to see your connected accounts."
+                  },
+                  "exchangeUUID": {
+                    "type": "string",
+                    "description": "Exchange connection UUID. Use get_account(info: \"exchanges\") to retrieve."
+                  },
+                  "settings": {
+                    "type": "object",
+                    "description": "Inner bot settings object. Use discover(target: \"bot\", botType) to learn valid fields, or call build_backtest_payload_template(botType) for a prefilled scaffold."
+                  },
+                  "from": {
+                    "type": "number",
+                    "description": "Range start as Unix millisecond timestamp. Optional for validate."
+                  },
+                  "to": {
+                    "type": "number",
+                    "description": "Range end as Unix millisecond timestamp. Optional for validate."
+                  },
+                  "interval": {
+                    "type": "string",
+                    "enum": [
+                      "1m",
+                      "5m",
+                      "15m",
+                      "1h",
+                      "4h",
+                      "1d"
+                    ],
+                    "description": "Candle interval. Optional, default: 1h."
+                  }
+                },
+                "description": "Backtest data wrapper."
+              }
+            },
+            "description": "Backtest request wrapper. Required nesting: payload.data.exchange (string), payload.data.exchangeUUID (UUID string), payload.data.settings (inner bot settings object). Optional: from, to (Unix ms timestamps), interval (default: 1h)."
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "fields": {
+            "type": "string",
+            "description": "Field selection for requestSync mode (optional)"
+          }
+        },
+        "required": [
+          "mode",
+          "botType",
+          "payload"
+        ]
+      }
+    },
+    {
+      "name": "backtest_info",
+      "description": "Get backtest information: list requests, fetch a specific request, get operation schema, or build a payload template.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "enum": [
+              "requests",
+              "request",
+              "schema",
+              "template"
+            ],
+            "description": "Information target. requests: list all. request: fetch one. schema: operation schema. template: payload template."
+          },
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type"
+          },
+          "fields": {
+            "type": "string",
+            "description": "Field selection: preset (\"minimal\", \"standard\", \"extended\", \"full\") or comma-separated fields (e.g. \"_id,uuid,settings.name,profit.total\"). Default: \"standard\""
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination (1-based). Default: 1"
+          },
+          "id": {
+            "type": "string",
+            "description": "Request ID (required for target=\"request\")"
+          },
+          "exchange": {
+            "type": "string",
+            "description": "Exchange code for template (optional, default: binance)"
+          }
+        },
+        "required": [
+          "target",
+          "botType"
+        ]
+      }
+    },
+    {
+      "name": "discover",
+      "description": "Discover bots, bot details, bot sections, indicators, or supported exchanges. Use this to learn available fields, defaults, and strategies.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "enum": [
+              "bots",
+              "bot",
+              "botSections",
+              "indicators",
+              "indicator",
+              "supportedExchanges"
+            ],
+            "description": "Discovery target. bots: list all. bot: details for one. botSections: list sections. indicators: list all. indicator: details for one. supportedExchanges: list all."
+          },
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type (required for bot/botSections)"
+          },
+          "section": {
+            "type": "string",
+            "description": "Section name for bot discovery (optional)"
+          },
+          "type": {
+            "type": "string",
+            "description": "Indicator type (required for target=\"indicator\")"
+          },
+          "action": {
+            "type": "string",
+            "description": "Action filter for indicators (optional: \"add\", \"close\", \"update\")"
+          },
+          "exchange": {
+            "type": "string",
+            "description": "Exchange code for indicators (optional)"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      }
+    },
+    {
+      "name": "get_account",
+      "description": "Get account information: balances, connected exchanges, global variables, or supported exchanges.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "info": {
+            "type": "string",
+            "enum": [
+              "balances",
+              "exchanges",
+              "globalVariables",
+              "supportedExchanges"
+            ],
+            "description": "Information type. balances: account balances. exchanges: connected exchanges. globalVariables: user variables. supportedExchanges: API supports."
+          },
+          "fields": {
+            "type": "string",
+            "description": "Field selection: preset (\"minimal\", \"standard\", \"extended\", \"full\") or comma-separated fields (e.g. \"_id,uuid,settings.name,profit.total\"). Default: \"standard\""
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination (1-based). Default: 1"
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "exchangeId": {
+            "type": "string",
+            "description": "Filter by exchange ID (balances only)"
+          },
+          "asset": {
+            "type": "string",
+            "description": "Filter by single asset (balances only)"
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filter by multiple assets (balances only). Use asset OR assets, not both."
+          }
+        },
+        "required": [
+          "info"
+        ]
+      }
+    },
+    {
+      "name": "manage_global_variable",
+      "description": "Create, update, or delete a global variable. Variables are user-defined constants accessible in strategies.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
+            "description": "Action to perform"
+          },
+          "id": {
+            "type": "string",
+            "description": "Variable ID (required for update/delete)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Variable name (required for create, optional for update)"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "int",
+              "float"
+            ],
+            "description": "Variable type (required for create, optional for update)"
+          },
+          "value": {
+            "type": "string",
+            "description": "Variable value (required for create, optional for update)"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "get_screener",
+      "description": "Get cryptocurrency screener results. Filter by market cap, volume, and sort by various metrics.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "string",
+            "description": "Field selection: preset (\"minimal\", \"standard\", \"extended\", \"full\") or comma-separated fields (e.g. \"_id,uuid,settings.name,profit.total\"). Default: \"standard\""
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number for pagination (1-based). Default: 1"
+          },
+          "category": {
+            "type": "string",
+            "description": "Filter by category (optional)"
+          },
+          "minMarketCap": {
+            "type": "number",
+            "description": "Minimum market cap (optional)"
+          },
+          "maxMarketCap": {
+            "type": "number",
+            "description": "Maximum market cap (optional)"
+          },
+          "minVolume": {
+            "type": "number",
+            "description": "Minimum volume (optional)"
+          },
+          "sort": {
+            "type": "string",
+            "description": "Sort field (applied client-side; the API does not sort). One of: \"volatility\" (largest absolute 24h % change), \"priceChange\"/\"change\", \"volume\"/\"totalVolume\", \"marketCap\", \"price\". Use \"volatility\" to find the most volatile pairs."
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "Sort order (optional, default desc when sorting)"
+          },
+          "maxPages": {
+            "type": "number",
+            "description": "When sorting, how many pages (10 coins each, ≤30, default 10) to fetch and rank across. Higher = wider pool for \"most volatile\" but more requests."
+          }
+        }
+      }
+    },
+    {
+      "name": "list_presets",
+      "description": "List curated bot-strategy presets, ranked by backtested performance. Each coin returns tiers (short/mid/long) × strategy (long/short) with ROI, drawdown, and the full strategy settings for review and comparison.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type to list presets for"
+          },
+          "coin": {
+            "type": "string",
+            "description": "Filter to a single base asset, e.g. \"BTC\" (skips the closed-deals floor)"
+          },
+          "exchange": {
+            "type": "string",
+            "description": "Canonical exchange, e.g. \"binance\" (use with coin)"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "long",
+              "short"
+            ],
+            "description": "Filter by direction (optional)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max coins to return (default 10, max 50)"
+          },
+          "summary": {
+            "type": "boolean",
+            "description": "Omit the per-tier settings blob for a lightweight ranked list (default false)"
+          },
+          "includeNoDeals": {
+            "type": "boolean",
+            "description": "Include coins with fewer than the minimum closed deals (default false)"
+          }
+        },
+        "required": [
+          "botType"
+        ]
+      }
+    },
+    {
+      "name": "apply_preset",
+      "description": "Create a bot from a curated preset in one call: fetches the preset for the given coin/exchange/tier/strategy, then creates a bot from its settings. Override pair, name, or sizing as needed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "botType": {
+            "type": "string",
+            "enum": [
+              "dca",
+              "combo",
+              "grid"
+            ],
+            "description": "Bot type"
+          },
+          "coin": {
+            "type": "string",
+            "description": "Base asset, e.g. \"BTC\""
+          },
+          "exchange": {
+            "type": "string",
+            "description": "Preset exchange, e.g. \"binance\""
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "short",
+              "mid",
+              "long"
+            ],
+            "description": "Risk tier: short (tight), mid (balanced), long (wide)"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "long",
+              "short"
+            ],
+            "description": "Direction (default \"long\")"
+          },
+          "exchangeUUID": {
+            "type": "string",
+            "description": "UUID of YOUR connected exchange to create the bot on (from get_account info:\"exchanges\")"
+          },
+          "paperContext": {
+            "type": "boolean",
+            "description": "Paper trading context (true = paper, false = real). Default: false"
+          },
+          "pair": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Override the preset pair(s), underscore format e.g. [\"BTC_USDT\"] (optional)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Override the bot name (optional)"
+          }
+        },
+        "required": [
+          "botType",
+          "coin",
+          "exchange",
+          "tier",
+          "exchangeUUID"
+        ]
+      }
+    }
+  ]
+}
