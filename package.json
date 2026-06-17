@@ -1,14 +1,16 @@
 {
   "name": "gainium-mcp",
   "version": "3.2.3",
+  "mcpName": "io.gainium/gainium-mcp",
   "type": "module",
-  "description": "MCP server for Gainium trading bot platform — manage bots, deals, balances and more via AI assistants",
+  "description": "MCP server for Gainium — manage trading bots, deals, and balances via AI assistants",
   "main": "dist/server.js",
   "bin": {
     "gainium-mcp": "dist/server.js"
   },
   "files": [
-    "dist/",
+    "dist/server.js",
+    "dist/gainium-client.js",
     "README.md",
     "LICENSE"
   ],
