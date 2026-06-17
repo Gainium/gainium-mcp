@@ -74,6 +74,14 @@ const MCP_PUBLIC_URL =
 const OAUTH_ENABLED = Boolean(
   OAUTH_ISSUER && INTROSPECTION_URL && INTROSPECTION_SECRET,
 )
+// This server's own RFC 8707 resource URI (its audience). When the public URL
+// is known, a token whose audience is a *different* resource (e.g. a token
+// minted for the read-only `…/read` connector presented to the full `…/mcp`
+// endpoint, or vice versa) is rejected. Tokens with no audience (legacy grants
+// / clients that don't send `resource`) are accepted for back-compat.
+const EXPECTED_RESOURCE = MCP_PUBLIC_URL
+  ? `${MCP_PUBLIC_URL}${MCP_HTTP_PATH}`
+  : undefined
 // OpenAI Apps domain-verification token. OpenAI's submission flow fetches
 // /.well-known/openai-apps-challenge on the MCP origin and expects the exact
 // challenge token back as the response body. Set via env so the token can be
@@ -162,6 +170,8 @@ interface IntrospectionResult {
   apiKey?: string
   apiSecret?: string
   scope?: string
+  /** RFC 8707 audience — the resource URI the token was minted for. */
+  aud?: string
   restrictions?: {
     permission?: string
     paperContext?: boolean | null
@@ -206,6 +216,7 @@ async function introspectToken(token: string): Promise<IntrospectionResult> {
             apiKey: data.gainium_api_key,
             apiSecret: data.gainium_api_secret,
             scope: data.scope,
+            aud: data.aud,
             restrictions: data.restrictions,
           }
         : { active: false }
@@ -224,6 +235,13 @@ async function introspectToken(token: string): Promise<IntrospectionResult> {
   return result
 }
 
+// A token is for us if it carries no audience (legacy) or its audience equals
+// this server's resource. A token minted for another resource is rejected.
+function audienceAllowed(intro: IntrospectionResult): boolean {
+  if (!EXPECTED_RESOURCE || !intro.aud) return true
+  return intro.aud === EXPECTED_RESOURCE
+}
+
 async function createGainiumClientFromHeaders(
   headers: IsomorphicHeaders | undefined,
 ): Promise<GainiumClient> {
@@ -232,7 +250,12 @@ async function createGainiumClientFromHeaders(
     const token = extractBearer(getRequestHeader(headers, 'authorization'))
     if (token) {
       const intro = await introspectToken(token)
-      if (intro.active && intro.apiKey && intro.apiSecret) {
+      if (
+        intro.active &&
+        intro.apiKey &&
+        intro.apiSecret &&
+        audienceAllowed(intro)
+      ) {
         return new GainiumClient(BASE_URL, intro.apiKey, intro.apiSecret)
       }
     }
@@ -320,7 +343,7 @@ async function ensureAuthorized(
     return false
   }
   const intro = await introspectToken(token)
-  if (!intro.active) {
+  if (!intro.active || !audienceAllowed(intro)) {
     writeUnauthorized(res, req)
     return false
   }

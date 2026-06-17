@@ -167,6 +167,7 @@ Using `minimal` reduces payload size by ~85%.
 - **Read-only key**: read tools only (`list_*`, `get_*`, `discover`, `backtest_info`, `get_screener`, `list_presets`)
 - **Write key**: all tools, including `create_*`, `update_*`, `clone_bot`, `manage_bot`, `manage_deal`, `manage_global_variable`, `apply_preset`, and `run_backtest`
 - **Read-only directory connector** (`/mcp` with `GAINIUM_READONLY=true`, served at `mcp.gainium.io/read`): exposes and allows only the 9 `readOnlyHint` tools — `run_backtest` and all write tools are excluded
+- **Token audience binding (OAuth mode)**: when `GAINIUM_MCP_PUBLIC_URL` is set, the server treats `<public-url><http-path>` as its RFC 8707 resource. An access token whose introspected `aud` is a *different* resource is rejected — a token minted for `mcp.gainium.io/read` can't be replayed against `mcp.gainium.io/mcp`, and vice versa. Tokens with no `aud` (legacy grants) are still accepted.
 
 ## Development
 
