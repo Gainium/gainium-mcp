@@ -7,7 +7,7 @@
     "url": "https://github.com/Gainium/gainium-mcp",
     "source": "github"
   },
-  "version": "3.3.0",
+  "version": "3.3.1",
   "websiteUrl": "https://gainium.io",
   "packages": [
     {
@@ -15,7 +15,7 @@
       "registry_name": "npm",
       "identifier": "gainium-mcp",
       "name": "gainium-mcp",
-      "version": "3.3.0",
+      "version": "3.3.1",
       "transport": {
         "type": "stdio"
       },

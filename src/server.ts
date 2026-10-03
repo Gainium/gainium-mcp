@@ -1567,7 +1567,8 @@ export const tools: Tool[] = [
       'Patch the settings of an existing DCA or Combo bot (Grid has no update endpoint — clone-and-recreate it instead). ' +
       'Pass only the fields you want to change inside `settings`; an empty `settings` object is rejected. ' +
       'Boolean gate enforcement: feature value fields (e.g. `slPerc`, `moveTPTrigger`) are silently ignored unless their toggle (`enableSL`, `useMoveTP`, etc.) is also set to `true` — to turn a feature on, send both the toggle and its value in the same call. ' +
-      'Changes apply to new orders; open positions are not retroactively adjusted. Use `manage_bot` for lifecycle (start/stop/archive) and `manage_deal` for per-deal actions.',
+      'Changes apply to new orders; open positions are not retroactively adjusted. Use `manage_bot` for lifecycle (start/stop/archive) and `manage_deal` for per-deal actions. ' +
+      'Indicators: `indicators` and `indicatorGroups` are FULL replacements, not patches — send the complete list the bot should have (read it with get_bot first, edit, send back; keep an indicator by keeping its `uuid`; `[]` removes all). This includes safety-order indicators (`indicatorAction: "startDca"`, `section: "dca"`, per-indicator `minPercFromLast`). To switch to them set `dcaCondition: "indicators"` (with `useDca: true`) and send at least one such indicator in the same call; `startCondition: "TechnicalIndicators"` likewise needs a `startDeal` indicator. Inconsistent combinations are rejected with a 400 listing the errors.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1582,7 +1583,7 @@ export const tools: Tool[] = [
           type: 'object',
           minProperties: 1,
           description:
-            'Settings object with fields to update. Only include changed fields.',
+            'Settings object with fields to update. Only include changed fields — except `indicators` / `indicatorGroups`, which replace the whole list when present.',
         },
       },
       required: ['botType', 'botId', 'settings'],
@@ -1609,7 +1610,7 @@ export const tools: Tool[] = [
         overrides: {
           type: 'object',
           description:
-            'Optional settings to override in the cloned bot. Pass an object with fields to change.',
+            "Optional settings to override in the cloned bot. Pass an object with fields to change. `indicators` / `indicatorGroups` (DCA/Combo) replace the source bot's whole list.",
         },
       },
       required: ['botType', 'botId'],
