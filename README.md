@@ -41,6 +41,7 @@ This local stdio mode uses `GAINIUM_API_KEY` and `GAINIUM_API_SECRET` from the s
 | `GAINIUM_MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio`, `http`, `streamable-http`, `sse`, or `http-sse` |
 | `GAINIUM_MCP_HOST` | No | `127.0.0.1` | Bind host for HTTP mode |
 | `GAINIUM_MCP_PORT` | No | `3000` | Bind port for HTTP mode |
+| `GAINIUM_MCP_ALLOWED_HOSTS` | No | — | Comma-separated hostnames (optionally `host:port`) accepted in the `Host`/`Origin` headers. In HTTP mode with env credentials and no OAuth, only loopback, IP-literal and these hosts are served (DNS rebinding protection) |
 | `GAINIUM_MCP_HTTP_PATH` | No | `/mcp` | Streamable HTTP endpoint path |
 | `GAINIUM_MCP_SSE_PATH` | No | `/sse` | Deprecated SSE GET endpoint path |
 | `GAINIUM_MCP_MESSAGES_PATH` | No | `/messages` | Deprecated SSE POST endpoint path |

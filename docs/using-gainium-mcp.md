@@ -46,6 +46,7 @@ These are the main runtime settings:
 | `GAINIUM_MCP_TRANSPORT` | No | `stdio` | `stdio` or `http` |
 | `GAINIUM_MCP_HOST` | No | `127.0.0.1` | Bind host for HTTP mode |
 | `GAINIUM_MCP_PORT` | No | `3000` | Bind port for HTTP mode |
+| `GAINIUM_MCP_ALLOWED_HOSTS` | No | — | Comma-separated hostnames (optionally `host:port`) accepted in the `Host`/`Origin` headers. In HTTP mode with env credentials and no OAuth, only loopback, IP-literal and these hosts are served (DNS rebinding protection) |
 | `GAINIUM_MCP_HTTP_PATH` | No | `/mcp` | Streamable HTTP path |
 | `GAINIUM_MCP_SSE_PATH` | No | `/sse` | Legacy SSE GET path |
 | `GAINIUM_MCP_MESSAGES_PATH` | No | `/messages` | Legacy SSE POST path |
@@ -545,11 +546,19 @@ export GAINIUM_MCP_HTTP_PATH=/mcp
 node dist/server.js
 ```
 
+If clients reach the server by a DNS name rather than an IP address, list that name, or the server answers 403:
+
+```bash
+export GAINIUM_MCP_ALLOWED_HOSTS=your-server.example.com
+```
+
 Then point clients to:
 
 ```text
 http://your-server:3000/mcp
 ```
+
+Anyone who can reach this port can use the configured API key, so firewall it to the clients you expect.
 
 In this setup:
 

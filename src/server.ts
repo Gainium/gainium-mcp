@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID, createHash } from 'node:crypto'
+import { isIP } from 'node:net'
 import {
   createServer,
   type IncomingMessage,
@@ -25,7 +26,7 @@ import { GainiumClient } from './gainium-client.js'
 // ── Environment ──────────────────────────────────────────────────────────────
 
 const SERVER_NAME = 'gainium-mcp'
-const SERVER_VERSION = '3.2.3'
+const SERVER_VERSION = '3.3.2'
 
 const API_KEY = process.env.GAINIUM_API_KEY
 const API_SECRET = process.env.GAINIUM_API_SECRET
@@ -88,6 +89,99 @@ const EXPECTED_RESOURCE = MCP_PUBLIC_URL
 // rotated without a code change.
 const OPENAI_APPS_CHALLENGE_TOKEN =
   process.env.OPENAI_APPS_CHALLENGE_TOKEN?.trim() || undefined
+
+// ── Host / Origin validation (DNS rebinding) ───────────────────────────────
+// Without OAuth, an HTTP server holding GAINIUM_API_KEY/SECRET in its env acts
+// for whoever reaches it. A web page can reach a loopback server by rebinding
+// its own hostname to 127.0.0.1, so in that mode every request must carry a
+// Host we recognise (loopback, an IP literal, or GAINIUM_MCP_ALLOWED_HOSTS),
+// and any browser Origin must be same-origin, loopback, or allowlisted.
+// OAuth mode authenticates each request with a bearer token instead.
+const ALLOWED_HOSTS = parseAllowedHosts(
+  process.env.GAINIUM_MCP_ALLOWED_HOSTS || process.env.MCP_ALLOWED_HOSTS,
+)
+const ENV_CREDENTIALS_MODE = !OAUTH_ENABLED && Boolean(API_KEY && API_SECRET)
+const HOST_VALIDATION_ENABLED =
+  ENV_CREDENTIALS_MODE || ALLOWED_HOSTS.length > 0
+
+export function parseAllowedHosts(value: string | undefined): string[] {
+  return (value || '')
+    .split(',')
+    .map((entry) =>
+      entry
+        .trim()
+        .toLowerCase()
+        .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
+        .replace(/\/.*$/, ''),
+    )
+    .filter(Boolean)
+}
+
+const HOST_HEADER_RE = /^[a-z0-9.\-:[\]]+$/i
+
+function isLoopbackOrIpLiteral(hostname: string): boolean {
+  return (
+    hostname === 'localhost' || isIP(hostname.replace(/^\[|\]$/g, '')) !== 0
+  )
+}
+
+export function isHostAllowed(
+  hostHeader: string | undefined,
+  allowedHosts: string[],
+): boolean {
+  if (!hostHeader || !HOST_HEADER_RE.test(hostHeader)) {
+    return false
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(`http://${hostHeader}`)
+  } catch {
+    return false
+  }
+  const hostname = parsed.hostname.toLowerCase()
+  // A rebinding page always presents its own DNS name, never an IP literal.
+  if (isLoopbackOrIpLiteral(hostname)) {
+    return true
+  }
+  const full = hostHeader.toLowerCase()
+  return allowedHosts.some((entry) => entry === hostname || entry === full)
+}
+
+export function isOriginAllowed(
+  originHeader: string | undefined,
+  hostHeader: string | undefined,
+  allowedHosts: string[],
+): boolean {
+  if (originHeader === undefined) {
+    return true // non-browser client
+  }
+  let origin: URL
+  try {
+    origin = new URL(originHeader) // "null" throws
+  } catch {
+    return false
+  }
+  const originHost = origin.host.toLowerCase()
+  if (hostHeader && originHost === hostHeader.toLowerCase()) {
+    return true
+  }
+  const hostname = origin.hostname.toLowerCase()
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '[::1]'
+  ) {
+    return true
+  }
+  return allowedHosts.some(
+    (entry) => entry === hostname || entry === originHost,
+  )
+}
+
+function isLoopbackBindHost(host: string): boolean {
+  const bare = host.replace(/^\[|\]$/g, '').toLowerCase()
+  return bare === 'localhost' || bare === '::1' || bare.startsWith('127.')
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -3255,6 +3349,25 @@ async function startHttpServer(): Promise<void> {
         return
       }
 
+      if (HOST_VALIDATION_ENABLED) {
+        const hostHeader = getHeaderValue(req.headers.host)
+        if (
+          !isHostAllowed(hostHeader, ALLOWED_HOSTS) ||
+          !isOriginAllowed(
+            getHeaderValue(req.headers.origin),
+            hostHeader,
+            ALLOWED_HOSTS,
+          )
+        ) {
+          writeTextResponse(
+            res,
+            403,
+            'Forbidden: Host or Origin not allowed. Add this hostname to GAINIUM_MCP_ALLOWED_HOSTS.',
+          )
+          return
+        }
+      }
+
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
 
       // OpenAI Apps domain verification. Public (no auth), served at the origin
@@ -3479,6 +3592,14 @@ async function startHttpServer(): Promise<void> {
   console.error(
     `[${SERVER_NAME}] HTTP server started on http://${HTTP_HOST}:${HTTP_PORT}`,
   )
+  if (ENV_CREDENTIALS_MODE && !isLoopbackBindHost(HTTP_HOST)) {
+    console.error(
+      `[${SERVER_NAME}] WARNING: listening on ${HTTP_HOST} without OAuth while GAINIUM_API_KEY/GAINIUM_API_SECRET are set. ` +
+        'Anyone who can reach this port can act on that Gainium account. ' +
+        'Bind to 127.0.0.1, firewall the port, or enable OAuth; consider GAINIUM_PAPER_ONLY=true. ' +
+        'Requests by DNS name are refused unless the name is listed in GAINIUM_MCP_ALLOWED_HOSTS.',
+    )
+  }
   console.error(
     `[${SERVER_NAME}] Streamable HTTP endpoint: ${MCP_HTTP_PATH} (GET/POST/DELETE)`,
   )
