@@ -789,6 +789,26 @@ export function validateBacktestPayloadShape(args: Record<string, any>): void {
   }
 }
 
+/**
+ * Body of `POST /api/v2/deals/dca/merge` for manage_deal(action: "merge"):
+ * `dealId` is the target (its bot owns the merged deal) and leads `dealIds`.
+ */
+export function buildMergeDealsBody(
+  args: Record<string, any>,
+): Record<string, unknown> {
+  const others = (Array.isArray(args.dealIds) ? args.dealIds : []).filter(
+    (id: unknown) => typeof id === 'string' && id && id !== args.dealId,
+  )
+  const body: Record<string, unknown> = {
+    dealIds: [args.dealId, ...new Set<string>(others)],
+    targetDealId: args.dealId,
+  }
+  for (const key of ['useTp', 'useSl', 'useDca', 'dcaOrders']) {
+    if (args[key] !== undefined && args[key] !== null) body[key] = args[key]
+  }
+  return body
+}
+
 export function validateToolArgs(
   name: string,
   args: Record<string, any>,
@@ -1112,6 +1132,22 @@ export function validateToolArgs(
       const fundsType = isNonEmptyString(args.type) ? args.type : 'fixed'
       if (fundsType === 'fixed' && !isNonEmptyString(args.asset)) {
         throw new Error("'asset' is required when type is 'fixed'")
+      }
+    } else if (action === 'merge') {
+      if (args.dealType !== 'dca') {
+        throw new Error(
+          "merge is only available for dealType 'dca' (combo deals cannot be merged)",
+        )
+      }
+      if (
+        !Array.isArray(args.dealIds) ||
+        !args.dealIds.some(
+          (id: unknown) => isNonEmptyString(id) && id !== args.dealId,
+        )
+      ) {
+        throw new Error(
+          "'dealIds' is required for merge: the other deal IDs to merge into dealId",
+        )
       }
     }
   }
@@ -1769,7 +1805,7 @@ export const tools: Tool[] = [
     annotations: { title: 'List Deals', readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     description:
       'List the user\'s deals of one type (DCA, Combo, or Terminal) with status, `botId`, and paper-context filters. Returns one page; `fields` accepts a preset or comma-separated list. ' +
-      'Use this to find active/closed deals across bots or filter by status — once you have a `dealId`, switch to `get_deal` for full detail, `update_deal` for config edits, or `manage_deal` for lifecycle actions (close/add/reduce funds).',
+      'Use this to find active/closed deals across bots or filter by status — once you have a `dealId`, switch to `get_deal` for full detail, `update_deal` for config edits, or `manage_deal` for lifecycle actions (close/add/reduce funds/merge).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1921,7 +1957,8 @@ export const tools: Tool[] = [
     name: 'manage_deal',
     annotations: { title: 'Manage Deal', readOnlyHint: false, destructiveHint: true },
     description:
-      'Lifecycle actions on a single open deal: `close` (terminal — requires `closeType`), `addFunds`, or `reduceFunds` (both require `qty`, `type`, and — when type="fixed" — `asset`). ' +
+      'Lifecycle actions on a single open deal: `close` (terminal — requires `closeType`), `addFunds`, or `reduceFunds` (both require `qty`, `type`, and — when type="fixed" — `asset`), or `merge` (DCA deals only — folds the deals in `dealIds` into one deal with `dealId`; `dealId`\'s bot owns the merged deal). ' +
+      '`merge` is ASYNCHRONOUS: it returns once the request is checked and sent; the merged deal then appears in `list_deals` and the merged deals become its child deals (a refusal shows up as a bot event). All deals must be open, same exchange account, pair and side. Optional `useTp`/`useSl` give the merged deal its bot\'s take profit/stop loss, `useDca` restarts the bot\'s DCA ladder (percentage ladders only) with `dcaOrders` levels. An ASAP bot may open a new deal right after a merge; change TP/SL afterwards with `update_deal`. ' +
       'Returns the updated deal record on success. Effects are immediate and not reversible — a market close fills at the current price, an `addFunds` opens a new entry order. ' +
       'Use this for *running* deals; create new deals with `create_deal`, edit deal *config* (TP, SL, settings) with `update_deal`, and start/stop the parent bot with `manage_bot`.',
     inputSchema: {
@@ -1929,7 +1966,7 @@ export const tools: Tool[] = [
       properties: {
         action: {
           type: 'string',
-          enum: ['close', 'addFunds', 'reduceFunds'],
+          enum: ['close', 'addFunds', 'reduceFunds', 'merge'],
           description: 'Action to perform on the deal',
         },
         ...dealIdRequired,
@@ -1968,6 +2005,31 @@ export const tools: Tool[] = [
         symbol: {
           type: 'string',
           description: 'Symbol override (optional)',
+        },
+        dealIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'merge only: the other open DCA deal IDs to merge into `dealId` (at least one)',
+        },
+        useTp: {
+          type: 'boolean',
+          description: "merge only: merged deal takes its bot's take profit",
+        },
+        useSl: {
+          type: 'boolean',
+          description: "merge only: merged deal takes its bot's stop loss",
+        },
+        useDca: {
+          type: 'boolean',
+          description:
+            "merge only: merged deal restarts its bot's DCA ladder from the merged average (percentage ladders only)",
+        },
+        dcaOrders: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            "merge only: levels of that ladder, capped at the bot's (default: the bot's)",
         },
       },
       required: ['action', 'dealId', 'dealType'],
@@ -2713,6 +2775,14 @@ async function handleToolCall(
             headers: paperHeader(args),
           },
         )
+        return JSON.stringify(res, null, 2)
+      }
+
+      if (action === 'merge') {
+        const res = await client.request('POST', '/api/v2/deals/dca/merge', {
+          body: buildMergeDealsBody(args),
+          headers: paperHeader(args),
+        })
         return JSON.stringify(res, null, 2)
       }
 

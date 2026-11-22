@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest'
 import {
   validateBacktestPayloadShape,
   validateToolArgs,
+  buildMergeDealsBody,
   applySettingsSafeDefaults,
   SCREENER_SORT_KEYS,
   backtestPayloadParam,
@@ -507,6 +508,52 @@ describe('validateToolArgs — manage_deal', () => {
         closeType: 'closeByMarket',
       }),
     ).not.toThrow()
+  })
+})
+
+// ── manage_deal merge (main-app spec 257) ─────────────────────────────────────
+
+describe('manage_deal — merge', () => {
+  it('is DCA-only and needs another deal in dealIds', () => {
+    const base = { action: 'merge', dealId: 'a' }
+    expect(() =>
+      validateToolArgs('manage_deal', { ...base, dealType: 'combo', dealIds: ['b'] }),
+    ).toThrow(/only available for dealType 'dca'/)
+    expect(() =>
+      validateToolArgs('manage_deal', { ...base, dealType: 'dca' }),
+    ).toThrow(/dealIds.*required/)
+    expect(() =>
+      validateToolArgs('manage_deal', { ...base, dealType: 'dca', dealIds: ['a'] }),
+    ).toThrow(/dealIds.*required/)
+    expect(() =>
+      validateToolArgs('manage_deal', { ...base, dealType: 'dca', dealIds: ['b'] }),
+    ).not.toThrow()
+  })
+
+  it('sends dealId as the target, first, with the options given', () => {
+    expect(
+      buildMergeDealsBody({
+        dealId: 'a',
+        dealIds: ['b', 'a', 'c', 'b'],
+        useTp: true,
+        useDca: false,
+        dcaOrders: 2,
+      }),
+    ).toEqual({
+      dealIds: ['a', 'b', 'c'],
+      targetDealId: 'a',
+      useTp: true,
+      useDca: false,
+      dcaOrders: 2,
+    })
+  })
+
+  it('tool schema and description advertise merge as async and DCA-only', () => {
+    const t = findTool('manage_deal') as any
+    expect(t.inputSchema.properties.action.enum).toContain('merge')
+    expect(t.inputSchema.properties.dealIds.type).toBe('array')
+    expect(t.description).toMatch(/ASYNCHRONOUS/)
+    expect(t.description).toMatch(/DCA deals only/)
   })
 })
 
